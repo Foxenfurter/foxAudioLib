@@ -5,11 +5,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"math"
 	"os"
 
-	"sync"
-
+	"github.com/go-audio/audio"
+	"github.com/go-audio/wav"
 	"scientificgo.org/fft"
 )
 
@@ -70,7 +71,7 @@ func ConvolveImpulsesFFT(impulse, signal []float64) []float64 {
 	return result
 }
 
-func IIRFilter(input, b, a, output []float64) {
+func IIRFilter(input []float64, b [3]float64, a [3]float64, output []float64) {
 	N := len(input)
 	M := len(b)
 	//L := len(a)
@@ -86,15 +87,19 @@ func IIRFilter(input, b, a, output []float64) {
 	}
 }
 
-func CascadeFilters(coefficients [][]float64) []float64 {
+func CascadeFilters(coefficients [][]float64, myFilterLength int) []float64 {
+	//results are more consistent with REW if filters are cascaded before generating an impulse response rather than merging a set of impulses
 	maxLength := len(coefficients)
 	if maxLength == 0 {
+		fmt.Printf("No coeeficients: ")
 		return nil
 	}
-
+	if myFilterLength == 0 {
+		myFilterLength = FilterLength
+	}
 	var a, b [3]float64
-	impulse := make([]float64, FilterLength)
-	signal := make([]float64, FilterLength)
+	impulse := make([]float64, myFilterLength)
+	signal := make([]float64, myFilterLength)
 
 	impulse[0] = 1
 
@@ -106,7 +111,7 @@ func CascadeFilters(coefficients [][]float64) []float64 {
 		b[1] = coefficients[i][4]
 		b[2] = coefficients[i][5]
 
-		IIRFilter(impulse, b[:], a[:], signal)
+		IIRFilter(impulse, b, a, signal)
 
 		impulse = make([]float64, len(signal))
 		copy(impulse, signal)
@@ -116,8 +121,8 @@ func CascadeFilters(coefficients [][]float64) []float64 {
 }
 
 func GenerateImpulseResponse(a0, a1, a2, b0, b1, b2 float64) []float64 {
-	a := []float64{a0, a1, a2}
-	b := []float64{b0, b1, b2}
+	a := [3]float64{a0, a1, a2}
+	b := [3]float64{b0, b1, b2}
 
 	// Create an array of zeros of length 'FilterLength'
 	impulse := make([]float64, FilterLength)
@@ -286,6 +291,25 @@ func CalcBiquadFilter(filterType string, Fc, Fs int, peakGain, width float64, sl
 // StreamManager is the equivalent of the C# StreamManager struct
 type StreamManager struct {
 	InputImpulse [][]float64
+}
+
+// ExportWavFile exports the WAV file using the CreateMemoryStream function
+func ExportWavFile(filename string, sampleRate, bitDepth int, sm *StreamManager) error {
+	// Create memory stream
+	wavData, err := sm.CreateMemoryStream(sampleRate, bitDepth)
+	if err != nil {
+		return err
+	}
+
+	// Write the WAV data to a file
+	//err = ioutil.WriteFile(filename, wavData, 0666)
+	err = ioutil.WriteFile(filename, wavData.Bytes(), 0666)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("WAV file successfully exported to %s\n", filename)
+	return nil
 }
 
 // CreateMemoryStream is the equivalent of the C# CreateMemoryStream method
@@ -490,7 +514,7 @@ func resampleChannel(inputSamples []float64, fromSampleRate, toSampleRate, quali
 		// Fmax / fsr = 0.5
 		// Apply a low pass before resampling - this has been hand-tested
 		myFilters := [][]float64{CalcBiquadFilter("lowpass", 18000, fromSampleRate, 0, 0.3, "Q")}
-		lowPassImpulse := CascadeFilters(myFilters)
+		lowPassImpulse := CascadeFilters(myFilters, 0)
 		inputSamples = ConvolveImpulsesFFT(lowPassImpulse, inputSamples)
 	}
 
@@ -543,8 +567,45 @@ func resampler(inputSamples [][]float64, fromSampleRate, toSampleRate, quality i
 }
 
 // wav file functions
+func WriteWavFile(filename string, signal [][]float64, sampleRate, bitDepth int) error {
+	numChannels := len(signal)
 
-func readWavFile(filename string) ([][]float64, uint32, uint16, error) {
+	// Create a new WAV file
+	file, err := os.Create(filename)
+	if err != nil {
+		return fmt.Errorf("error creating wav file: %v", err)
+	}
+	defer file.Close()
+
+	// Initialize the WAV encoder
+	enc := wav.NewEncoder(file, sampleRate, bitDepth, numChannels, 1)
+
+	// Write audio data to the WAV file
+	buf := &audio.IntBuffer{Data: make([]int, len(signal[0])*numChannels)}
+	for i := 0; i < len(signal[0]); i++ {
+		for j := 0; j < numChannels; j++ {
+			// Convert double values to integer based on the bit depth
+			//intValue := int(signal[j][i] * (1 << (bitDepth - 1)))
+			intValue := int(math.Round(signal[j][i])) * (1 << (bitDepth - 1))
+			buf.Data[i*numChannels+j] = intValue
+		}
+	}
+
+	// Write to the WAV file
+	if err := enc.Write(buf); err != nil {
+		return fmt.Errorf("error writing audio data: %v", err)
+	}
+
+	// Close the WAV encoder
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("error closing wav encoder: %v", err)
+	}
+
+	fmt.Println("WAV file successfully created.")
+	return nil
+}
+
+func ReadWavFile(filename string) ([][]float64, uint32, uint16, error) {
 	file, err := os.OpenFile(filename, os.O_RDONLY, 0644)
 	if err != nil {
 		return nil, 0, 0, err
@@ -619,40 +680,4 @@ func readWavFile(filename string) ([][]float64, uint32, uint16, error) {
 	}
 
 	return samples, sampleRate, bitsPerSample, nil
-}
-
-//===================ErrorLogger =============================
-
-// ErrorLogger is a Go equivalent of the C# ErrorLogger class
-type ErrorLogger struct {
-	mu            sync.Mutex
-	errorMessages []string
-}
-
-// NewErrorLogger creates a new ErrorLogger instance
-func NewErrorLogger() *ErrorLogger {
-	return &ErrorLogger{
-		errorMessages: make([]string, 0),
-	}
-}
-
-// LogError appends an error message to the ErrorLogger
-func (e *ErrorLogger) LogError(errorMessage string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.errorMessages = append(e.errorMessages, errorMessage)
-}
-
-// GetErrorMessages returns the list of error messages in the ErrorLogger
-func (e *ErrorLogger) GetErrorMessages() []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.errorMessages
-}
-
-// ClearErrors clears all error messages in the ErrorLogger
-func (e *ErrorLogger) ClearErrors() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.errorMessages = nil
 }

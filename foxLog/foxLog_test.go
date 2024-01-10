@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Foxenfurter/pkg/foxLog"
+	"github.com/Foxenfurter/foxAudioLib/foxLog"
 )
 
 func TestLogger(t *testing.T) {

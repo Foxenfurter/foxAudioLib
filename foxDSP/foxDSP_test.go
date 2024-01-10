@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Foxenfurter/pkg/foxDSP"
+	"github.com/Foxenfurter/foxAudioLib/foxDSP"
 )
 
 func TestDSP(t *testing.T) {

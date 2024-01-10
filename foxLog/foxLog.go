@@ -1,4 +1,5 @@
-// pkg/foxLog/logger.go
+// Package allows logging in a way that is constistent with othe Squeeze Clients
+// squeezeDSP/foxLog/logger.go
 package foxLog
 
 import (

@@ -9,8 +9,6 @@ import (
 	"math"
 	"os"
 
-	"github.com/go-audio/audio"
-	"github.com/go-audio/wav"
 	"scientificgo.org/fft"
 )
 
@@ -564,45 +562,6 @@ func resampler(inputSamples [][]float64, fromSampleRate, toSampleRate, quality i
 	}
 
 	return inputSamples
-}
-
-// wav file functions
-func WriteWavFile(filename string, signal [][]float64, sampleRate, bitDepth int) error {
-	numChannels := len(signal)
-
-	// Create a new WAV file
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("error creating wav file: %v", err)
-	}
-	defer file.Close()
-
-	// Initialize the WAV encoder
-	enc := wav.NewEncoder(file, sampleRate, bitDepth, numChannels, 1)
-
-	// Write audio data to the WAV file
-	buf := &audio.IntBuffer{Data: make([]int, len(signal[0])*numChannels)}
-	for i := 0; i < len(signal[0]); i++ {
-		for j := 0; j < numChannels; j++ {
-			// Convert double values to integer based on the bit depth
-			//intValue := int(signal[j][i] * (1 << (bitDepth - 1)))
-			intValue := int(math.Round(signal[j][i])) * (1 << (bitDepth - 1))
-			buf.Data[i*numChannels+j] = intValue
-		}
-	}
-
-	// Write to the WAV file
-	if err := enc.Write(buf); err != nil {
-		return fmt.Errorf("error writing audio data: %v", err)
-	}
-
-	// Close the WAV encoder
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("error closing wav encoder: %v", err)
-	}
-
-	fmt.Println("WAV file successfully created.")
-	return nil
 }
 
 func ReadWavFile(filename string) ([][]float64, uint32, uint16, error) {

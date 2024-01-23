@@ -12,7 +12,7 @@ import (
 
 func TestEncoderAsyncBardNew(t *testing.T) {
 	// Encoder configuration
-	encoderDefinition := foxAudioEncoder.EncoderDefinition{
+	myEncoder := foxAudioEncoder.AudioEncoder{
 		Type:        "Wav",
 		SampleRate:  44100,
 		BitDepth:    16, // Adjust as needed
@@ -22,8 +22,9 @@ func TestEncoderAsyncBardNew(t *testing.T) {
 	}
 	fmt.Println("Test: Creating new Encoder...")
 	// Create encoder
-	encoder, err := foxAudioEncoder.NewEncoder(&encoderDefinition)
+	err := myEncoder.Initialise()
 	if err != nil {
+		fmt.Println("Test: panic on New Header...")
 		panic(err)
 	}
 	// Number of samples each buffer should hold will actually be numChannels * BufferSize
@@ -36,9 +37,9 @@ func TestEncoderAsyncBardNew(t *testing.T) {
 	// Start sample generation asynchronously
 	fmt.Println("Test: Start sample generation asynchronously...")
 	go func() {
-		numChannels := encoderDefinition.NumChannels
+		numChannels := myEncoder.NumChannels
 		numSamplesPerCall := BufferSize // Adjust as needed
-		dataSize := encoderDefinition.Size
+		dataSize := myEncoder.Size
 
 		for dataSize > 0 {
 			fmt.Println("Test: generate sample...")
@@ -59,7 +60,7 @@ func TestEncoderAsyncBardNew(t *testing.T) {
 
 		go func(samples [][]float64) {
 			fmt.Println("Test: Encode and write sample...")
-			err := encoder.EncodeData(samples) // Write handled within EncodeData
+			err := myEncoder.EncodeData(samples) // Write handled within EncodeData
 			if err != nil {
 				// Handle the error appropriately
 				fmt.Println("Test: Error Encoding Data")

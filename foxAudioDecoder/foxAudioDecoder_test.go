@@ -10,35 +10,33 @@ import (
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder"
 )
 
-func TestPCMDecoderFileLoader(t *testing.T) {
-	// Initialize PCMDecoder
-	decoder := foxAudioDecoder.PCMDecoder{
+func TestAudioDecoderFileLoader(t *testing.T) {
+	// Initialize AudioDecoder
+	decoder := foxAudioDecoder.AudioDecoder{
 		//Filename: "c:\\temp\\Pencil_1644.wav", // Replace with your test file
-		Filename:         "c:\\temp\\impulse.wav", // Replace with your test file
-		DecoderFrameSize: 1000,                    // Adjust as needed
+		//Filename: "c:\\temp\\impulse.wav", // Replace with your test file
+		Filename:         "c:\\temp\\Loudness_yz.wav", // Replace with your test file
+		DecoderFrameSize: 1000,                        // Adjust as needed
 		Buffer:           make([]byte, foxAudioDecoder.InputBufferSize),
 		Type:             "Wav",
 	}
-	fmt.Println("Decoding input file... ", decoder.Filename)
+	fmt.Println("Test: Decoding input file... ", decoder.Filename)
 	err := decoder.Initialise()
 	if err != nil {
-		t.Fatalf("Error initializing PCMDecoder: %v", err)
+		t.Fatalf("Test: Error initializing AudioDecoder: %v", err)
 	}
 	var WG sync.WaitGroup
-	// Create a channel to signal completion
-	//doneProcessing := make(chan struct{})
+
 	WG.Add(1)
 	// Start decoding asynchronously
 	go func() {
 		defer WG.Done()
-		//decoder.Start(doneProcessing)
-		decoder.Start()
+		decoder.ReadInput()
 	}()
 
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		//decoder.DecodeData(doneProcessing)
 		decoder.DecodeData()
 	}()
 
@@ -51,10 +49,9 @@ func TestPCMDecoderFileLoader(t *testing.T) {
 		for decodedResult := range decoder.OutputChan {
 			// Discard decoded results
 			ResultCounter += len(decodedResult[0])
-			//fmt.Println("Test: Received from Results channel\n", len(decodedResult[0]))
+
 		}
 		fmt.Println("Test: Not waiting anymore", ResultCounter)
-		//<-doneProcessing
 
 	}()
 	fmt.Println("Test: Are we still waiting")
@@ -62,8 +59,7 @@ func TestPCMDecoderFileLoader(t *testing.T) {
 
 	WG.Wait()
 	fmt.Println("Test: closing decoder")
-	// Close channels
-	//close(doneProcessing)
+
 	decoder.Close()
 
 	fmt.Println("Test: Number of Frame Samples:", decoder.DecoderFrameCount)

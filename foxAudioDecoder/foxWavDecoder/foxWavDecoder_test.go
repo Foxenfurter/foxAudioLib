@@ -67,6 +67,7 @@ func TestReadAndDecodeAudio(t *testing.T) {
 		byteStreamChan <- buf[decoder.ReaderCursor:n]
 		// cursor should now be at the beginning of the bytestream
 		decoder.ReaderCursor = 0
+
 		fmt.Println("Test: Make first buffer...")
 
 		// Read and send remaining data chunks

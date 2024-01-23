@@ -7,18 +7,25 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	foxWavEncoder "github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxWavEncoder"
 )
 
-// Encoder definition
-type EncoderDefinition struct {
+const packageName = "foxAudioEncoder"
+
+// Encoder definition EncoderDefinition
+type AudioEncoder struct {
 	SampleRate  int
 	BitDepth    int
 	NumChannels int
 	Size        int64
 	Type        string
 	Filename    string // Added filename field
+
+	DebugFunc func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
+
+	encoder EncoderInterface
 }
 
 // each Encoder must have these methods defined
@@ -27,82 +34,107 @@ type EncoderInterface interface {
 	EncodeData(samples [][]float64) ([]byte, error)
 }
 
-// Encoder struct
-type Encoder struct {
-	encoder  EncoderInterface
-	filename string // Added filename field
-}
-
 // Constructor for Encoder
-func NewEncoder(definition *EncoderDefinition) (*Encoder, error) {
-	encoder := &Encoder{filename: definition.Filename}
+func (myEncoder *AudioEncoder) Initialise() error {
+	const functionName = "Initialise"
+	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating Header..."))
 	var err error
 	// Remove existing file if it exists and a filename is provided
-	if encoder.filename != "" { // Only check for existing file if filename is not blank
-		if _, err := os.Stat(encoder.filename); err == nil {
-			err = os.Remove(encoder.filename)
+	if myEncoder.Filename != "" { // Only check for existing file if filename is not blank
+		//clean and standardize the file path
+		myEncoder.Filename = filepath.ToSlash(filepath.Clean(myEncoder.Filename))
+		if _, err := os.Stat(myEncoder.Filename); err == nil {
+			err = os.Remove(myEncoder.Filename)
 			if err != nil {
-				return nil, fmt.Errorf("error removing existing file: %w", err)
+				return fmt.Errorf(packageName+":"+functionName+":error removing existing file: %w", err)
 			}
 		}
 	}
-	switch definition.Type {
+	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  decide which encoder to use..."))
+	switch myEncoder.Type {
 	case "Wav":
-		encoder.encoder = &foxWavEncoder.FoxEncoder{
-			SampleRate:  definition.SampleRate,
-			BitDepth:    definition.BitDepth,
-			NumChannels: definition.NumChannels,
-			Size:        definition.Size,
+		myEncoder.encoder = &foxWavEncoder.FoxEncoder{
+			SampleRate:  myEncoder.SampleRate,
+			BitDepth:    myEncoder.BitDepth,
+			NumChannels: myEncoder.NumChannels,
+			Size:        myEncoder.Size,
 		}
-		err = encoder.writeHeader() // Write header during initialization
+		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  use wav now write Header.."))
+		err = myEncoder.writeHeader() // Write header during initialization
+		if err != nil {
+			return fmt.Errorf(packageName+":"+functionName+":error writing wav header: %w", err)
+		}
 	default:
-		return nil, errors.New("unsupported encoder type")
+		return errors.New(packageName + ":" + functionName + ":unsupported encoder type")
 	}
-
-	return encoder, err
+	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Finished Header..."))
+	return err
 }
 
 // Expose the methods
-func (e *Encoder) EncodeHeader() error {
-	return e.writeHeader()
+func (myEncoder *AudioEncoder) EncodeHeader() error {
+	return myEncoder.writeHeader()
 }
 
-func (e *Encoder) EncodeData(buffer [][]float64) error {
-	encodedData, err := e.encoder.EncodeData(buffer)
+func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
+	const functionName = "EncodeData"
+	encodedData, err := myEncoder.encoder.EncodeData(buffer)
 	if err != nil {
-		return err
+		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
-	return e.writeData(encodedData)
+	return myEncoder.writeData(encodedData)
 }
 
 // Helper functions for file writing
-func (e *Encoder) writeHeader() error {
-	headerBytes, err := e.encoder.EncodeHeader()
+func (myEncoder *AudioEncoder) writeHeader() error {
+	const functionName = "writeHeader"
+	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  call low level Header.."))
+	headerBytes, err := myEncoder.encoder.EncodeHeader()
 	if err != nil {
-		return err
+		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
-	return writeOutput(headerBytes, e.filename)
+	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  writing header.."))
+	err = writeOutput(headerBytes, myEncoder.Filename)
+	if err != nil {
+		return errors.New(packageName + ":" + functionName + ": " + err.Error())
+	}
+	return nil
 }
 
-func (e *Encoder) writeData(data []byte) error {
-	return writeOutput(data, e.filename)
+func (e *AudioEncoder) writeData(data []byte) error {
+	return writeOutput(data, e.Filename)
 }
 
 // Helper function for writing to a file
 func writeOutput(data []byte, filename string) error {
+	const functionName = "writeOutput"
 	if filename == "" {
 		// Write to standard out
 		_, err := os.Stdout.Write(data)
-		return err
+		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	} else {
 		// Write to file
 		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 		if err != nil {
-			return err
+			return errors.New(packageName + ":" + functionName + ": " + err.Error())
 		}
 		defer file.Close()
-
 		_, err = file.Write(data)
-		return err
+		if err != nil {
+			return errors.New(packageName + ":" + functionName + ": " + err.Error())
+		}
+
 	}
+	return nil
+}
+
+// Function to handle debug calls, allowing for different logging implementations
+func (myEncoder *AudioEncoder) debug(message string) {
+
+	if myEncoder.DebugFunc != nil {
+		myEncoder.DebugFunc(message)
+	} else { // if no external debug function available just print the message
+		println(message)
+	}
+
 }

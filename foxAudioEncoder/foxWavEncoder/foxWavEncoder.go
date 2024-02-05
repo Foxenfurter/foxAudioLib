@@ -109,9 +109,9 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 	}
 
 	// Ensure the buffer size is a multiple of the number of channels
-	if totalSamples%numChannels != 0 {
-		//return nil, errors.New("foxwavencoder: input buffer size is not a multiple of the number of channels")
-	}
+	//if totalSamples%numChannels != 0 {
+	//return nil, errors.New("foxwavencoder: input buffer size is not a multiple of the number of channels")
+	//}
 
 	// Create a buffer to accumulate encoded samples
 	encodedBuffer := new(bytes.Buffer)

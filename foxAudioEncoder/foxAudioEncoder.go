@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	foxWavEncoder "github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxWavEncoder"
 )
@@ -43,6 +44,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 	if myEncoder.Filename != "" { // Only check for existing file if filename is not blank
 		//clean and standardize the file path
 		myEncoder.Filename = filepath.ToSlash(filepath.Clean(myEncoder.Filename))
+
 		if _, err := os.Stat(myEncoder.Filename); err == nil {
 			err = os.Remove(myEncoder.Filename)
 			if err != nil {
@@ -51,8 +53,11 @@ func (myEncoder *AudioEncoder) Initialise() error {
 		}
 	}
 	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  decide which encoder to use..."))
-	switch myEncoder.Type {
-	case "Wav":
+
+	// Decide which encoder to use
+	switch strings.ToUpper(myEncoder.Type) {
+
+	case "WAV":
 		myEncoder.encoder = &foxWavEncoder.FoxEncoder{
 			SampleRate:  myEncoder.SampleRate,
 			BitDepth:    myEncoder.BitDepth,
@@ -83,6 +88,68 @@ func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
 	return myEncoder.writeData(encodedData)
+}
+
+func (myEncoder *AudioEncoder) AccumulateAndEncode(samples [][]float64, n int) error {
+	const functionName = "AccumulateAndEncode"
+	channelCount := myEncoder.NumChannels
+	fmt.Println(packageName+":"+functionName+": Expecting samples: ", n)
+	accumulatedSamples := make([][]float64, channelCount) // Allocate space for 2 channels
+	for i := range accumulatedSamples {
+		accumulatedSamples[i] = make([]float64, n) // Initialize each channel with an empty slice
+	}
+	//counter for samples populated
+	s := 0
+	// Assuming samples[0] represents the channel count
+
+	for _, sample := range samples {
+		for c := 0; c < channelCount; c++ {
+			// Ensure enough slots in the accumulated sample for this channel
+			if len(accumulatedSamples[c]) < n {
+				//accumulatedSamples[c] = append(accumulatedSamples[c], make([]float64, n-len(accumulatedSamples[c]))...)
+
+			}
+			accumulatedSamples[c][s] = sample[c]
+			//increment the sample count
+			if c == 0 {
+				s++
+			}
+			fmt.Println("Encode and accumulated samples number so far: ", s)
+			// Add the current sample value to the appropriate channel
+			//accumulatedSamples[c][len(accumulatedSamples[c])-1] = sample[c]
+		}
+
+		if s == n { // Check channel 0 for fullness
+			// Encode and write accumulated samples
+			fmt.Println("Encode and write accumulated samples...")
+			err := myEncoder.EncodeData(accumulatedSamples)
+			if err != nil {
+				// Handle error
+
+				return errors.New(packageName + ":" + functionName + ": " + err.Error())
+			}
+
+			// Reset accumulated samples for the next batch
+			//	for c := 0; c < channelCount; c++ {
+			//		accumulatedSamples[c] = accumulatedSamples[c][:0] // Clear slice without reallocation
+			//	}
+		}
+	}
+	for c := 0; c < channelCount; c++ {
+		accumulatedSamples[c] = accumulatedSamples[c][:s] // Only keep samples populated so far
+	}
+
+	// Handle remaining samples on the last iteration
+	if len(accumulatedSamples[0]) > 0 { // Check channel 0 for remaining data
+		fmt.Println("Encode and write remaining samples...")
+		err := myEncoder.EncodeData(accumulatedSamples)
+		if err != nil {
+			// Handle error
+			return errors.New(packageName + ":" + functionName + ": " + err.Error())
+
+		}
+	}
+	return nil
 }
 
 // Helper functions for file writing

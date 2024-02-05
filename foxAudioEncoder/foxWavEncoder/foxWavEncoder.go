@@ -31,11 +31,10 @@ func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 		fileSize = we.Size + 36
 	} else {
 
-		dataSize = math.MaxUint32 // Representing an unknown or unlimited size
+		dataSize = math.MaxUint32 - 36 // Representing an unknown or unlimited size
 		fileSize = math.MaxUint32
 	}
-	dataSize = math.MaxUint32 // Representing an unknown or unlimited size
-	fileSize = math.MaxUint32
+
 	// Create a buffer to store the WAV header
 	headerBuffer := make([]byte, 44) // WAV header size is 44 bytes
 
@@ -57,7 +56,7 @@ func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	// Write the data chunk header to the buffer
 	copy(headerBuffer[36:40], []byte("data"))
 	binary.LittleEndian.PutUint32(headerBuffer[40:44], uint32(dataSize)) // Placeholder for data size
-	//fmt.Println("foxWavEncoder: DataSize.", uint32(dataSize))
+	fmt.Println("foxWavEncoder: DataSize.", uint32(dataSize))
 	return headerBuffer, nil
 }
 
@@ -106,20 +105,16 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 	totalSamples := len(buffer[0]) // Assuming all channels have the same number of samples
 	numChannels := we.NumChannels
 	if len(buffer) != numChannels {
-		return nil, errors.New("foxwavencoder: number of channels in the buffer doesn't match the specified number of channels")
+		return nil, errors.New("foxwavencoder: number of channels in the buffer: " + strconv.Itoa(len(buffer)) + " doesn't match the specified number of channels: " + strconv.Itoa(numChannels))
 	}
 
 	// Ensure the buffer size is a multiple of the number of channels
 	if totalSamples%numChannels != 0 {
-		return nil, errors.New("foxwavencoder: input buffer size is not a multiple of the number of channels")
+		//return nil, errors.New("foxwavencoder: input buffer size is not a multiple of the number of channels")
 	}
-
-	// Determine the size of a single sample in bytes based on bit depth
-	//sampleSize := we.BitDepth / 8
 
 	// Create a buffer to accumulate encoded samples
 	encodedBuffer := new(bytes.Buffer)
-	//encodedBuffer := make([]byte, sampleSize*totalSamples)
 	//fmt.Println("foxWavEncoder: Encoding Buffer.", totalSamples, numChannels, we.BitDepth)
 	for i := 0; i < totalSamples; i++ {
 		//fmt.Println("foxWavEncoder: ", i)
@@ -144,58 +139,18 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 	return encodedBuffer.Bytes(), nil
 }
 
-// EncodeWAVData encodes WAV data from float64 samples
-// EncodeWavData encodes WAV data synchronously and returns an EncodeResult
-func (we *FoxEncoder) encodeWavData(buffer []float64, numChannels int) ([]byte, error) {
-	if len(buffer)%numChannels != 0 {
-		// Return an error directly
-		return nil, errors.New("foxwavencoder: input buffer size is not a multiple of the number of channels")
-	}
-	fmt.Println("foxWavEncoder: Encoding Buffer.")
-	// Determine the size of a single sample in bytes based on bit depth
-	sampleSize := we.BitDepth / 8
-
-	// Create a buffer to accumulate encoded samples
-	encodedBuffer := make([]byte, sampleSize*len(buffer))
-
-	// Convert and write audio data
-	for i, sample := range buffer {
-		// sample = we.clampSample(sample)
-		sample := math.Max(-1.0, math.Min(1.0, sample))
-		var sampleBytes []byte
-
-		switch we.BitDepth {
-		case 16:
-			sampleBytes = we.convertTo16BitSample(sample)
-
-		case 24:
-			sampleBytes = we.convertTo24BitSample(sample)
-
-		case 32:
-			sampleBytes = we.convertTo32BitSample(sample)
-		}
-		// Copy the encoded sample into the buffer
-		copy(encodedBuffer[i*sampleSize:(i+1)*sampleSize], sampleBytes)
-	}
-
-	// Return the result directly
-	return encodedBuffer, nil
-}
-
-// convertTo16BitSample converts a float64 sample to 16-bit PCM.
 func (we *FoxEncoder) convertTo16BitSample(sample float64) []byte {
-	const bitDepth = 16
-	maxValue := (1 << (bitDepth - 1)) - 1
-	minValue := -maxValue
+	//const bitDepth int = 16
+	const maxValue16Bit = 32767.0
+	const minValue16Bit = -32768.0
 
 	// Scale the sample to the range of 16-bit signed integers
-	scaledValue := sample * float64(maxValue)
-
+	scaledValue := sample * float64(maxValue16Bit)
 	// Round to the nearest integer
-	roundedValue := int(math.Round(scaledValue))
+	roundedValue := int16(math.Round(scaledValue))
 
 	// Clip the value to the valid range
-	clippedValue := int(math.Max(float64(minValue), math.Min(float64(maxValue), float64(roundedValue))))
+	clippedValue := int16(math.Max(float64(minValue16Bit), math.Min(float64(maxValue16Bit), float64(roundedValue))))
 
 	// Convert the clipped value to a byte array in little-endian format
 	return []byte{
@@ -207,17 +162,17 @@ func (we *FoxEncoder) convertTo16BitSample(sample float64) []byte {
 // convertTo24BitSample converts a float64 sample to 24-bit PCM.
 func (we *FoxEncoder) convertTo24BitSample(sample float64) []byte {
 	const bitDepth = 24
-	maxValue := (1 << (bitDepth - 1)) - 1
-	minValue := -maxValue
+	const maxValue24Bit = 8388607.0
+	const minValue24Bit = -8388608.0
 
 	// Scale the sample to the range of 24-bit signed integers
-	scaledValue := sample * float64(maxValue)
+	scaledValue := sample * float64(maxValue24Bit)
 
 	// Round to the nearest integer
 	roundedValue := int(math.Round(scaledValue))
 
 	// Clip the value to the valid range
-	clippedValue := int(math.Max(float64(minValue), math.Min(float64(maxValue), float64(roundedValue))))
+	clippedValue := int(math.Max(float64(minValue24Bit), math.Min(float64(maxValue24Bit), float64(roundedValue))))
 
 	// Convert the clipped value to a byte array in little-endian format
 	return []byte{
@@ -230,17 +185,17 @@ func (we *FoxEncoder) convertTo24BitSample(sample float64) []byte {
 // convertTo32BitSample converts a float64 sample to 32-bit PCM.
 func (we *FoxEncoder) convertTo32BitSample(sample float64) []byte {
 	const bitDepth = 32
-	maxValue := (1 << (bitDepth - 1)) - 1
-	minValue := -maxValue
+	const maxValue32Bit = 2147483647.0
+	const minValue32Bit = -2147483648.0
 
 	// Scale the sample to the range of 32-bit signed integers
-	scaledValue := sample * float64(maxValue)
+	scaledValue := sample * float64(maxValue32Bit)
 
 	// Round to the nearest integer
 	roundedValue := int64(math.Round(scaledValue))
 
 	// Clip the value to the valid range
-	clippedValue := int64(math.Max(float64(minValue), math.Min(float64(maxValue), float64(roundedValue))))
+	clippedValue := int64(math.Max(float64(minValue32Bit), math.Min(float64(maxValue32Bit), float64(roundedValue))))
 
 	// Convert the clipped value to a byte array in little-endian format
 	return []byte{

@@ -1,8 +1,0 @@
-go 1.21.5
-
-use (
-	./foxLog
-	C:\Users\jonat\go\src\github.com\Foxenfurter
-	C:\Users\jonat\go\src\github.com\Foxenfurter\pkg\foxDSP
-	C:\Users\jonat\go\src\github.com\Foxenfurter\pkg\foxLog
-)

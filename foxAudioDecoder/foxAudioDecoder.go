@@ -1,4 +1,5 @@
-// package calls an encoder based upon the supplied format
+// Package: github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxAudioDecoder.go
+// package calls a decoder  based upon the supplied format
 // and then processes the returned bytestream
 // either to standardd out or to the supplied file name
 package foxAudioDecoder
@@ -12,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavDecoder"
+	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 )
 
 const packageName = "foxAudioDecoder"
@@ -31,7 +32,7 @@ type AudioDecoder struct {
 	Size        uint32 // Size of the audio data
 	Type        string
 	Filename    string // Added for file reading
-	WavDecoder  *foxWavDecoder.FoxWavDecoder
+	WavDecoder  *foxWavReader.FoxWavReader
 	FrameSample int
 	DebugFunc   func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 
@@ -59,7 +60,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	// Decide which encoder to use
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
-		myDecoder.WavDecoder = foxWavDecoder.FoxWavDecoder
+		myDecoder.WavDecoder = &foxWavReader.FoxWavReader{}
 		myDecoder.WavDecoder.InputFile = myFile
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Init the header

@@ -7,18 +7,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder"
+	foxAudioDecoder "github.com/Foxenfurter/foxAudioLib/foxAudioDecoder"
 )
 
 func TestAudioDecoderFileLoader(t *testing.T) {
 	// Initialize AudioDecoder
-	decoder := foxAudioDecoder.AudioDecoder{
+	decoder := &foxAudioDecoder.AudioDecoder{
 		//Filename: "c:\\temp\\Pencil_1644.wav", // Replace with your test file
+		Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
 		//Filename: "c:\\temp\\impulse.wav", // Replace with your test file
-		Filename:         "c:\\temp\\Loudness_yz.wav", // Replace with your test file
-		DecoderFrameSize: 1000,                        // Adjust as needed
-		Buffer:           make([]byte, foxAudioDecoder.InputBufferSize),
-		Type:             "Wav",
+		//Filename: "c:\\temp\\Loudness_yz.wav", // Replace with your test file
+
+		Type: "Wav",
 	}
 	fmt.Println("Test: Decoding input file... ", decoder.Filename)
 	err := decoder.Initialise()
@@ -30,7 +30,7 @@ func TestAudioDecoderFileLoader(t *testing.T) {
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		decoder.DecodeSamples(DecodedSamplesChannel)
+		decoder.DecodeSamples(DecodedSamplesChannel, nil)
 	}()
 
 	// Close the doneProcessing channel to signal that decoding is finished
@@ -55,7 +55,7 @@ func TestAudioDecoderFileLoader(t *testing.T) {
 
 	decoder.Close()
 
-	fmt.Println("Test: Number of Frame Samples:", decoder.DecoderFrameCount)
+	//fmt.Println("Test: Number of Frame Samples:", decoder.DecoderFrameCount)
 	fmt.Println("Test: Done...")
 }
 

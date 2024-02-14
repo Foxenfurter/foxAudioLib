@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	foxWavDecoder "github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavDecoder"
+	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavDecoder"
 )
 
 const packageName = "foxAudioDecoder"
@@ -20,7 +20,7 @@ const packageName = "foxAudioDecoder"
 // The input Buffer is used to read in byte date from the external source
 const InputBufferSize = 64000
 
-// The DecoderFrameSize is the number of frame samples to output in each frame.
+// The DecoderFrameSize is the number of frame samples to output ian each frame.
 // A frame being an arbitrary number of frame samples and a frame sample being  n channels of samples e.g. stereo is 2 single samples.
 const DefaultDecoderFrameSize int = 1000
 

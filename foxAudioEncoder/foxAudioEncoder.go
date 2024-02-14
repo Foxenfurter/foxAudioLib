@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	foxWavEncoder "github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxWavEncoder"
 )
@@ -81,6 +82,7 @@ func (myEncoder *AudioEncoder) EncodeHeader() error {
 	return myEncoder.writeHeader()
 }
 
+// Call low level encoder to convert [][]float64 samples to bytesream of choice, and then call output writer
 func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 	const functionName = "EncodeData"
 	encodedData, err := myEncoder.encoder.EncodeData(buffer)
@@ -88,6 +90,105 @@ func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
 	return myEncoder.writeData(encodedData)
+}
+
+// Wraps the encoder into a channel based function that takes a stream of inputSamples as [][]float64, throttleInputChannel as duration and a wait group
+// the optional throttleInputChannel will send a delay based upont the encoder processing time to be used by the feeding function in order to slow down any processing
+func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]float64, throttleInputChannel chan<- time.Duration) error {
+	const functionName = "EncodeSamplesChannel"
+
+	for samples := range samplesChannel {
+
+		start := time.Now()
+
+		err := myEncoder.EncodeData(samples)
+		if err != nil {
+			return errors.New(packageName + ":" + functionName + ": " + err.Error())
+		}
+
+		elapsedTime := time.Since(start)
+		//
+		if throttleInputChannel != nil {
+			throttleInputChannel <- elapsedTime
+		}
+
+	}
+
+	return nil
+}
+
+func (myEncoder *AudioEncoder) AccumulateAndEncodeChannel(samplesChannel <-chan [][]float64, throttleInputChannel chan<- time.Duration, n int) error {
+	const functionName = "AccumulateAndEncode"
+	channelCount := myEncoder.NumChannels
+	fmt.Println(packageName+":"+functionName+": Expecting samples: ", n)
+
+	//counter for samples populated
+	s := 0
+	accumulatedSamples := make([][]float64, channelCount) // Allocate space for 2 channels
+	// Assuming samples[0] represents the channel count
+	start := time.Now()
+	for samples := range samplesChannel {
+
+		for i := range accumulatedSamples {
+			accumulatedSamples[i] = make([]float64, n) // Initialize each channel with an empty slice
+		}
+		//println("Samples in this batch", len(samples), len(samples[0]))
+		for si := 0; si < len(samples[0]); si++ {
+
+			for c := 0; c < channelCount; c++ {
+
+				accumulatedSamples[c][s] = samples[c][si]
+
+			}
+
+			if s == n-1 { // Check channel 0 for fullness
+				// Encode and write accumulated samples
+				fmt.Println("Encode and write accumulated samples...", s)
+				// reset the counter
+				s = 0
+				err := myEncoder.EncodeData(accumulatedSamples)
+
+				if err != nil {
+					// Handle error
+					return errors.New(packageName + ":" + functionName + ": " + err.Error())
+				}
+
+				//
+
+			}
+			s++
+		}
+		if throttleInputChannel != nil {
+			elapsedTime := time.Since(start)
+			throttleInputChannel <- elapsedTime
+			start = time.Now()
+		}
+
+		fmt.Println("Encode and accumulated samples number so far: ", s)
+
+	}
+	// We gave sime leftover samples
+	for c := 0; c < channelCount; c++ {
+		accumulatedSamples[c] = accumulatedSamples[c][:s] // Only keep samples populated so far
+	}
+
+	// Handle remaining samples on the last iteration
+	if len(accumulatedSamples[0]) > 0 { // Check channel 0 for remaining data
+		fmt.Println("Encode and write remaining samples...")
+		err := myEncoder.EncodeData(accumulatedSamples)
+		if err != nil {
+			// Handle error
+			return errors.New(packageName + ":" + functionName + ": " + err.Error())
+
+		}
+		if throttleInputChannel != nil {
+			elapsedTime := time.Since(start)
+			throttleInputChannel <- elapsedTime
+
+		}
+
+	}
+	return nil
 }
 
 func (myEncoder *AudioEncoder) AccumulateAndEncode(samples [][]float64, n int) error {

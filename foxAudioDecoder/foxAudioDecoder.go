@@ -6,10 +6,11 @@ package foxAudioDecoder
 import (
 	"errors"
 	"fmt"
-	"io"
+
 	"os"
 	"path/filepath"
-	"sync"
+	"strings"
+	"time"
 
 	foxWavDecoder "github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavDecoder"
 )
@@ -17,256 +18,120 @@ import (
 const packageName = "foxAudioDecoder"
 
 // The input Buffer is used to read in byte date from the external source
-const InputBufferSize = 65000
+const InputBufferSize = 64000
 
 // The DecoderFrameSize is the number of frame samples to output in each frame.
 // A frame being an arbitrary number of frame samples and a frame sample being  n channels of samples e.g. stereo is 2 single samples.
 const DefaultDecoderFrameSize int = 1000
 
 type AudioDecoder struct {
-	SampleRate        int
-	BitDepth          int
-	NumChannels       int
-	Size              uint32 // Size of the audio data
-	Type              string
-	Filename          string // Added for file reading
-	ActiveDecoder     DecoderInterface
-	DecoderFrameSize  int
-	DecoderFrameCount int64 // number
-	Buffer            []byte
-	HeaderSize        int // size of the header
+	SampleRate  int
+	BitDepth    int
+	NumChannels int
+	Size        uint32 // Size of the audio data
+	Type        string
+	Filename    string // Added for file reading
+	WavDecoder  *foxWavDecoder.FoxWavDecoder
+	FrameSample int
+	DebugFunc   func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 
-	Reader     io.Reader // Use io.Reader for flexibility
-	Mutex      *sync.Mutex
-	InputChan  chan []byte
-	OutputChan chan [][]float64
-	WaitGroup  *sync.WaitGroup
-
-	DebugFunc func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
-
-}
-
-// each Encoder must have these methods defined
-type DecoderInterface interface {
-	//Initialise() error
-	DecodeHeader([]byte) error // Now returns a *FoxDecoder
-	DecodeData([]byte, int) ([][]float64, error)
-	GetBitDepth() int
-	GetNumChannels() int
-	GetSize() uint32
-	GetSampleRate() int
 }
 
 // NewDecoder creates a new decoder with implicit file opening or Stdin setup
 func (myDecoder *AudioDecoder) Initialise() error {
 	const functionName = "Initialise"
-
-	// Open file or set reader for Stdin
+	// We need to be able to read the header in the filestream before we do any processing
+	// we are going to peak this and 1000 bytes should cover almost all formats.
+	var myFile *os.File
 	if myDecoder.Filename == "" {
-		myDecoder.Reader = os.Stdin
+		myFile = os.Stdin
 	} else {
 		var err error
 		// clean and standardize the filename
 		myDecoder.Filename = filepath.ToSlash(filepath.Clean(myDecoder.Filename))
-		myDecoder.Reader, err = os.Open(myDecoder.Filename)
+		myFile, err = os.Open(myDecoder.Filename)
 		if err != nil {
 			return err
 		}
 	}
-	// this is the number of frame samples to return in one go
-	if myDecoder.DecoderFrameSize == 0 {
-		myDecoder.DecoderFrameSize = DefaultDecoderFrameSize
-	}
-
-	// Initial read of input into the buffer in order to extract the  header
-	n, err := myDecoder.Reader.Read(myDecoder.Buffer)
-	if err != nil && err != io.EOF {
-
-		return errors.New(packageName + ":" + functionName + ": " + err.Error())
-	}
-	if n == 0 {
-		errorText := "Zero length input: "
-		return errors.New(packageName + ":" + functionName + ": " + errorText)
-	}
 
 	// Initialize decoder based on type
-	switch myDecoder.Type {
-	case "Wav":
-		myDecoder.ActiveDecoder = new(foxWavDecoder.FoxDecoder)
-		err := myDecoder.DecodeHeader()
+	// Decide which encoder to use
+	switch strings.ToUpper(myDecoder.Type) {
+	case "WAV":
+		myDecoder.WavDecoder = foxWavDecoder.FoxWavDecoder
+		myDecoder.WavDecoder.InputFile = myFile
+		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
+		//Init the header
+		myDecoder.WavDecoder.DecodeWavHeader()
+		// Read the audio header data into a buffer
+		myDecoder.BitDepth = int(myDecoder.WavDecoder.BitDepth)
+		myDecoder.SampleRate = int(myDecoder.WavDecoder.SampleRate)
+		myDecoder.NumChannels = int(myDecoder.WavDecoder.NumChannels)
 
-		// at his point the buffer should have the header stripped out.
-		if err != nil {
-			return errors.New(packageName + ":" + functionName + ":" + err.Error())
-		}
+		// If the input buffer is bigger then 2000 than piping in through std in seems to cause issues for the upstream app
+		// hence setting buffer size to too
+		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
+		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
+		myDecoder.Size = myDecoder.WavDecoder.Size
+		/*
+			// NB go audio does not have an option to access the data size directly so we need to derive from the duration
+			duration, err := myDecoder.WavDecoder.Duration()
+
+			if err != nil {
+				// this is mostly OK as we only neeed size for output and the defaults work for most cases
+				myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + " Unable to access duration and calculate size "))
+
+			} else {
+
+				// convert durations to microseconds and back to seconds as a float64 (divide by 1 million)
+				durationInSeconds := float64(duration.Microseconds()) / 1e6
+				//multiply duration in seconds  by the sample rate (samples /Second) * bits per sample	(bit depth /8) * number of channels.
+				// this should give the correct number of bytes in the file
+				dataSize := math.Round(durationInSeconds * float64(myDecoder.SampleRate) * float64(myDecoder.BitDepth) / 8.0 * float64(myDecoder.NumChannels))
+				// Ensure that the maximum data size is max size field allows (effectively 4GB size)
+				myDecoder.Size = uint32(math.Min(float64(math.MaxInt32), dataSize))
+
+			}
+		*/
 	default:
 		errorText := "unsupported encoder type "
 		return errors.New(packageName + ":" + functionName + ":" + errorText)
 	}
-	// At this point we should have decoded the header and so know the number of channels, bitDepth and SampleRate of the data in the bytestream.
-	// now prepare for asynchronous operations
-	myDecoder.Mutex = &sync.Mutex{}
-	if n > myDecoder.HeaderSize {
-		myDecoder.Buffer = myDecoder.Buffer[myDecoder.HeaderSize:n]
-	}
+
 	// It is important that the low level decoder packages support these setter functions
-	myDecoder.BitDepth = myDecoder.ActiveDecoder.GetBitDepth()
-	myDecoder.SampleRate = myDecoder.ActiveDecoder.GetSampleRate()
-	myDecoder.NumChannels = myDecoder.ActiveDecoder.GetNumChannels()
-	myDecoder.Size = myDecoder.ActiveDecoder.GetSize()
-	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] ", myDecoder.SampleRate, myDecoder.NumChannels, myDecoder.BitDepth, myDecoder.Size))
-	// Now initialise the Buffers
-	myDecoder.InputChan = make(chan []byte, 100)
-	myDecoder.OutputChan = make(chan [][]float64, 100)
 
-	myDecoder.WaitGroup = &sync.WaitGroup{}
+	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] FrameSample [%v]",
+		myDecoder.SampleRate, myDecoder.NumChannels, myDecoder.BitDepth, myDecoder.Size, myDecoder.FrameSample))
 
 	return nil
 }
 
-// Decode Header use the low level library to decode the header
-func (myDecoder *AudioDecoder) DecodeHeader() error {
-	const functionName = "DecodeHeader"
-	err := myDecoder.ActiveDecoder.DecodeHeader(myDecoder.Buffer)
-	if err != nil {
-		return errors.New(packageName + ":" + functionName + ": " + err.Error())
+func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64, ThrottleLoaderChannel chan time.Duration) error {
+	const functionName = "DecodeSamples"
+	switch strings.ToUpper(myDecoder.Type) {
+	case "WAV":
+		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		return err
+	default:
+		errorText := "unsupported encoder type "
+		return errors.New(packageName + ":" + functionName + ":" + errorText)
 	}
 
-	// We need to replace this with getter calls from the lower level function.
-	//myDecoder.HeaderSize = 44
-
-	return nil
 }
 
-// Start is an asynchronous function that continuously reads PCM samples and fills the buffer.
-// func (myDecoder *AudioDecoder) Start(doneProcessing chan struct{}) error {
-func (myDecoder *AudioDecoder) ReadInput() error {
-	const functionName = "ReadInput"
-	//myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" starting buffer length: %v", len(myDecoder.Buffer)))
+func maxValueForBitDepth(depth int) float64 {
 
-	// Increment the WaitGroup counter
-	myDecoder.WaitGroup.Add(1)
-
-	go func() error {
-
-		myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" Send initial input: %v ", len(myDecoder.Buffer)))
-		// Send the updated AudioDecoder to the channel
-		myDecoder.Mutex.Lock()
-		myDecoder.InputChan <- myDecoder.Buffer[:len(myDecoder.Buffer)]
-		myDecoder.Mutex.Unlock()
-
-		// We need to handle scenarios where the input file contains meta data at the end of the file as well as reaching the end of file
-		// what we are doing is setting the total amount of data in bytes that we expect to read from the input int remainingbytes variable
-		// we check whether the total amount read in exceeds the expected remaining bytes input and if it does, we truncate the read buffer
-		// we also check for end of file
-		// finally we decrement the counter
-		// if the file size is not known the Header.Size will either be 0 or max of uint32, which should mean EOF will be reached first.
-
-		// initialize remaining bytes - and don't forget to include the first header read as this includes data too!
-		remainingBytes := myDecoder.Size - uint32(len(myDecoder.Buffer))
-
-		for {
-			// Read PCM samples into the buffer
-			n, err := myDecoder.Reader.Read(myDecoder.Buffer)
-
-			if err != nil && err != io.EOF {
-				// Log the error or handle it as needed
-				return errors.New(packageName + ":" + functionName + ": " + err.Error())
-			}
-
-			// Lock the mutex before updating the buffer
-			myDecoder.Mutex.Lock()
-			//myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" Sending next packet bytes remaining [%v] buffer read [%v] ", remainingBytes, uint32(n)))
-			// Handle truncation if Header.Size is contained in the current chunk
-			if remainingBytes > 0 && remainingBytes < uint32(n) {
-				n = int(remainingBytes)
-			}
-
-			// Send the updated AudioDecoder to the channel
-			myDecoder.InputChan <- myDecoder.Buffer[:n]
-
-			// Decrement the remainingBytes counter
-			remainingBytes -= uint32(n)
-
-			// Unlock the mutex after updating the buffer
-			myDecoder.Mutex.Unlock()
-
-			if err == io.EOF || remainingBytes == 0 {
-				// Log the error or handle it as needed
-				//myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + " Reached End of Stream"))
-				close(myDecoder.InputChan)
-				break
-			}
-		}
-
-		myDecoder.WaitGroup.Done()
-		myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + " Finished reading"))
-		return nil
-	}()
-
-	return nil
-}
-
-func (myDecoder *AudioDecoder) decodeAndHandleOutput(data []byte, numSamples int) error {
-	const functionName = "DecodeData"
-
-	output, err := myDecoder.ActiveDecoder.DecodeData(data, numSamples)
-	if err != nil {
-
-		return errors.New(packageName + ":" + functionName + ":" + err.Error())
+	MaxValue := 0.0
+	switch depth {
+	case 16:
+		MaxValue = 32768.0
+	case 24:
+		MaxValue = 8388608.0
+	case 32:
+		MaxValue = 2147483647.0
 	}
-
-	myDecoder.Mutex.Lock()
-	myDecoder.OutputChan <- output
-	myDecoder.Mutex.Unlock()
-	return nil
-}
-
-func (myDecoder *AudioDecoder) DecodeData() error {
-	const functionName = "DecodeData"
-	//myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + " starting"))
-	numSamples := myDecoder.DecoderFrameSize
-	totalChunkSize := 0
-	var leftoverData []byte
-	totalSamples := 0
-	// calculate size of frame Sample for use in the decoder
-	frameSampleSize := myDecoder.NumChannels * myDecoder.BitDepth / 8
-	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" Starting Number Channels [%v] Bit Depth [%v] ", myDecoder.NumChannels, myDecoder.BitDepth))
-	bufferSize := numSamples * frameSampleSize
-
-	for chunk := range myDecoder.InputChan {
-		totalChunkSize += len(chunk)
-		myDecoder.Mutex.Lock()
-		combinedData := append(leftoverData, chunk...)
-		myDecoder.Mutex.Unlock()
-		for len(combinedData) >= bufferSize { // Ensure sufficient data for decoding
-			totalSamples += numSamples
-			err := myDecoder.decodeAndHandleOutput(combinedData, numSamples)
-			if err != nil {
-
-				return errors.New(packageName + ":" + functionName + ":" + err.Error())
-			}
-			combinedData = combinedData[bufferSize:]
-
-		}
-		leftoverData = combinedData // Move remaining data to leftoverData
-
-	}
-
-	if len(leftoverData) > 0 {
-
-		myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" decoding Leftover Audio data: [ %v]", len(leftoverData)/frameSampleSize))
-		totalSamples += len(leftoverData) / frameSampleSize
-		err := myDecoder.decodeAndHandleOutput(leftoverData, len(leftoverData)/frameSampleSize)
-		if err != nil {
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-		}
-
-	}
-	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" Finished Decoding Audio, Samples processed: [ %v] Chunks Received [ %v ]", totalSamples, totalChunkSize))
-	close(myDecoder.OutputChan)
-	//myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  DECODE DATA sent Done"))
-	return nil
+	return MaxValue
 }
 
 func (myDecoder *AudioDecoder) Close() {
@@ -274,6 +139,40 @@ func (myDecoder *AudioDecoder) Close() {
 	// channels are closed in the functions that populate them.
 	// This function is called if any other cleanup is needed
 	myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  All done..."))
+}
+
+// Some functions for identifying the most common audio formats from the header in the bytestream under 1000 bytes needed.
+func identifyFormat(data []byte) string {
+	patterns := map[string][]byte{
+		"WAV":  {0x52, 0x49, 0x46, 0x46},
+		"MP3":  {0x49, 0x44, 0x33},             // Check for "ID3"
+		"FLAC": {0x66, 0x4C, 0x61, 0x43},       // Check for "fLaC"
+		"AIFF": {0x6D, 0x73, 0x62, 0x66},       // Check for "msbf"
+		"Ogg":  {0x4F, 0x67, 0x67, 0x53},       // Check for "OggS"
+		"WMA":  {0x57, 0x4D, 0x41, 0x00},       // Check for "WMA\x00\x00\x00"
+		"M4A":  {0x66, 0x74, 0x79, 0x70},       // Check for "ftyp"
+		"APE":  {0x41, 0x50, 0x45, 0x76, 0x32}, // Check for "APEv2"
+	}
+
+	for format, pattern := range patterns {
+		if len(data) >= len(pattern) && compareBytes(data[:len(pattern)], pattern) {
+			return format
+		}
+	}
+
+	return "Unknown"
+}
+
+func compareBytes(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Function to handle debug calls, allowing for different logging implementations

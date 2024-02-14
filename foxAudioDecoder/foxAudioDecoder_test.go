@@ -26,18 +26,11 @@ func TestAudioDecoderFileLoader(t *testing.T) {
 		t.Fatalf("Test: Error initializing AudioDecoder: %v", err)
 	}
 	var WG sync.WaitGroup
-
-	WG.Add(1)
-	// Start decoding asynchronously
-	go func() {
-		defer WG.Done()
-		decoder.ReadInput()
-	}()
-
+	DecodedSamplesChannel := make(chan [][]float64, 10000)
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		decoder.DecodeData()
+		decoder.DecodeSamples(DecodedSamplesChannel)
 	}()
 
 	// Close the doneProcessing channel to signal that decoding is finished
@@ -46,7 +39,7 @@ func TestAudioDecoderFileLoader(t *testing.T) {
 	go func() {
 		var ResultCounter int
 		defer WG.Done()
-		for decodedResult := range decoder.OutputChan {
+		for decodedResult := range DecodedSamplesChannel {
 			// Discard decoded results
 			ResultCounter += len(decodedResult[0])
 

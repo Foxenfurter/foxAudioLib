@@ -1,4 +1,4 @@
-// pkg/foxEncode/wavEncoder/wavEncoder.go
+// Package: github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxwavEncoder/foxwavEncoder.go
 // pkg for encoding a stream into wav format. The package has been specified to allow a header to be written in the initial phase
 // the body to be following this. The package is expected to be called as part of an encoder function. which will run asynchronously
 
@@ -21,8 +21,17 @@ type FoxEncoder struct {
 	Size        int64
 }
 
-// createWavHeader generates the WAV file header as a byte slice
+const maxValue32BitInt = 2147483647
+const minValue32BitInt = -2147483648
+const maxValue24BitInt = 8388607
+const minValue24BitInt = -8388608
+const maxValue16Bit = 32767.0
+const minValue16Bit = -32768.0
 
+/*
+EncodeHeader generates the WAV file header (RIFF format) as a byte slice
+using information from ther FoxEncoder Struct
+*/
 func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	var dataSize, fileSize int64
 
@@ -36,28 +45,29 @@ func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	}
 
 	// Create a buffer to store the WAV header
-	headerBuffer := make([]byte, 44) // WAV header size is 44 bytes
+	headerBuffer := new(bytes.Buffer)
 
 	// Write WAV file header to the buffer
-	copy(headerBuffer[0:4], []byte("RIFF"))
-	binary.LittleEndian.PutUint32(headerBuffer[4:8], uint32(fileSize)) // Placeholder for total file size - 36 bytes for the header
-	copy(headerBuffer[8:12], []byte("WAVE"))
+	headerBuffer.WriteString("RIFF")
 
-	// Write the format chunk to the buffer
-	copy(headerBuffer[12:16], []byte("fmt "))
-	binary.LittleEndian.PutUint32(headerBuffer[16:20], 16)                                                   // Size of the format chunk
-	binary.LittleEndian.PutUint16(headerBuffer[20:22], 1)                                                    // Audio format (PCM)
-	binary.LittleEndian.PutUint16(headerBuffer[22:24], uint16(we.NumChannels))                               // Number of channels
-	binary.LittleEndian.PutUint32(headerBuffer[24:28], uint32(we.SampleRate))                                // Sample rate
-	binary.LittleEndian.PutUint32(headerBuffer[28:32], uint32(we.SampleRate*we.NumChannels*(we.BitDepth/8))) // Byte rate
-	binary.LittleEndian.PutUint16(headerBuffer[32:34], uint16(we.NumChannels*(we.BitDepth/8)))               // Block align
-	binary.LittleEndian.PutUint16(headerBuffer[34:36], uint16(we.BitDepth))                                  // Bits per sample
+	binary.Write(headerBuffer, binary.LittleEndian, int32(fileSize))
+	headerBuffer.WriteString("WAVE")
+
+	// Write the format chunk
+	headerBuffer.WriteString("fmt ")
+	binary.Write(headerBuffer, binary.LittleEndian, int32(16))                                           // Size of the format chunk
+	binary.Write(headerBuffer, binary.LittleEndian, int16(1))                                            // Audio format (PCM)
+	binary.Write(headerBuffer, binary.LittleEndian, int16(we.NumChannels))                               // Number of channels
+	binary.Write(headerBuffer, binary.LittleEndian, int32(we.SampleRate))                                // Sample rate
+	binary.Write(headerBuffer, binary.LittleEndian, int32(we.SampleRate*we.NumChannels*(we.BitDepth/8))) // Byte rate
+	binary.Write(headerBuffer, binary.LittleEndian, int16(we.NumChannels*(we.BitDepth/8)))               // Block align
+	binary.Write(headerBuffer, binary.LittleEndian, int16(we.BitDepth))                                  // Bits per sample
 
 	// Write the data chunk header to the buffer
-	copy(headerBuffer[36:40], []byte("data"))
-	binary.LittleEndian.PutUint32(headerBuffer[40:44], uint32(dataSize)) // Placeholder for data size
-	fmt.Println("foxWavEncoder: DataSize.", uint32(dataSize))
-	return headerBuffer, nil
+	headerBuffer.WriteString("data")
+	binary.Write(headerBuffer, binary.LittleEndian, int32(dataSize))
+	fmt.Println("foxWavEncoder: DataSize: ", uint32(dataSize))
+	return headerBuffer.Bytes(), nil
 }
 
 func (we *FoxEncoder) EncodeData1(buffer [][]float64) ([]byte, error) {
@@ -108,11 +118,6 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 		return nil, errors.New("foxwavencoder: number of channels in the buffer: " + strconv.Itoa(len(buffer)) + " doesn't match the specified number of channels: " + strconv.Itoa(numChannels))
 	}
 
-	// Ensure the buffer size is a multiple of the number of channels
-	//if totalSamples%numChannels != 0 {
-	//return nil, errors.New("foxwavencoder: input buffer size is not a multiple of the number of channels")
-	//}
-
 	// Create a buffer to accumulate encoded samples
 	encodedBuffer := new(bytes.Buffer)
 	//fmt.Println("foxWavEncoder: Encoding Buffer.", totalSamples, numChannels, we.BitDepth)
@@ -141,6 +146,24 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 
 func (we *FoxEncoder) convertTo16BitSample(sample float64) []byte {
 	//const bitDepth int = 16
+
+	// Scale the sample to the range of 16-bit signed integers
+	scaledValue := sample * float64(maxValue16Bit)
+	// Round to the nearest integer
+	roundedValue := int16(math.Round(scaledValue))
+
+	// Clip the value to the valid range
+	clippedValue := int16(math.Max(float64(minValue16Bit), math.Min(float64(maxValue16Bit), float64(roundedValue))))
+
+	// Convert the clipped value to a byte array in little-endian format
+	return []byte{
+		byte(clippedValue & 0xFF),
+		byte((clippedValue >> 8) & 0xFF),
+	}
+}
+
+func (we *FoxEncoder) convertTo16BitSample2(sample float64) []byte {
+	//const bitDepth int = 16
 	const maxValue16Bit = 32767.0
 	const minValue16Bit = -32768.0
 
@@ -161,6 +184,19 @@ func (we *FoxEncoder) convertTo16BitSample(sample float64) []byte {
 
 // convertTo24BitSample converts a float64 sample to 24-bit PCM.
 func (we *FoxEncoder) convertTo24BitSample(sample float64) []byte {
+
+	// Combine scaling, rounding, and clipping in one step with integer math
+	intValue := int32(math.Max(math.Min(math.Round(sample*float64(maxValue24BitInt)), float64(maxValue24BitInt)), float64(minValue24BitInt)))
+
+	// Efficient bitwise conversion using shifts and masks
+	return []byte{
+		byte(intValue & 0xFF),
+		byte((intValue >> 8) & 0xFF),
+		byte((intValue >> 16) & 0xFF),
+	}
+}
+
+func (we *FoxEncoder) convertTo24BitSample2(sample float64) []byte {
 	const bitDepth = 24
 	const maxValue24Bit = 8388607.0
 	const minValue24Bit = -8388608.0
@@ -184,6 +220,20 @@ func (we *FoxEncoder) convertTo24BitSample(sample float64) []byte {
 
 // convertTo32BitSample converts a float64 sample to 32-bit PCM.
 func (we *FoxEncoder) convertTo32BitSample(sample float64) []byte {
+
+	// Combine scaling, rounding, and clipping in one step
+	intValue := int32(math.Max(math.Min(math.Round(sample*float64(maxValue32BitInt)), float64(maxValue32BitInt)), float64(minValue32BitInt)))
+
+	// Convert to byte array in little-endian format using bitwise operations
+	return []byte{
+		byte(intValue & 0xFF),
+		byte((intValue >> 8) & 0xFF),
+		byte((intValue >> 16) & 0xFF),
+		byte((intValue >> 24) & 0xFF),
+	}
+}
+
+func (we *FoxEncoder) convertTo32BitSample2(sample float64) []byte {
 	const bitDepth = 32
 	const maxValue32Bit = 2147483647.0
 	const minValue32Bit = -2147483648.0

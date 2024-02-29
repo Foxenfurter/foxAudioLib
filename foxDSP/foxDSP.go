@@ -24,27 +24,88 @@ func hammingWindow(length int) []float64 {
 	return window
 }
 
-func ConvolveImpulsesFFT(impulse, signal []float64) []float64 {
-	length1 := len(impulse)
-	length2 := len(signal)
-	outputLength := length1 + length2 - 1
-	result := make([]float64, outputLength)
+func ConvolveImpulsesFFTwithTail(impulse, signal []float64, overlapSize int, tail []float64) ([]float64, []float64) {
+	impulseLength := len(impulse)
+	signalLength := len(signal)
+	outputLength := impulseLength + signalLength - 1
 
 	// Pad input arrays to the nearest power of 2
-	paddedLength := int(math.Pow(2, math.Ceil(math.Log2(float64(length1+length2-1)))))
+	paddedLength := int(math.Pow(2, math.Ceil(math.Log2(float64(impulseLength+signalLength-1)))))
 	paddedImpulse := make([]complex128, paddedLength)
 	paddedSignal := make([]complex128, paddedLength)
 
 	// Apply Hamming window to impulse and signal
-	hammingWindowImpulse := hammingWindow(length1)
-	hammingWindowSignal := hammingWindow(length2)
+	hammingWindowImpulse := hammingWindow(impulseLength)
+	hammingWindowSignal := hammingWindow(signalLength)
+
+	// Map impulse and signal to padded arrays with windowing
+	for i := 0; i < impulseLength; i++ {
+		paddedImpulse[i] = complex(impulse[i]*hammingWindowImpulse[i], 0)
+	}
+	for i := 0; i < signalLength; i++ {
+		paddedSignal[i] = complex(signal[i]*hammingWindowSignal[i], 0)
+	}
+
+	// Combine tail and signal into a combined block
+	combinedBlock := make([]float64, len(tail)+signalLength)
+	copy(combinedBlock, tail)
+	copy(combinedBlock[len(tail):], signal)
+
+	// Pad combined block to the padded length
+	paddedCombinedBlock := make([]complex128, paddedLength)
+	for i := 0; i < len(combinedBlock); i++ {
+		paddedCombinedBlock[i] = complex(combinedBlock[i], 0)
+	}
+
+	// Apply FFT to impulse and combined block
+	fft.Fft(paddedImpulse, false)
+	fft.Fft(paddedCombinedBlock, false)
+
+	// Multiply the transformed arrays element-wise
+	multipliedResult := make([]complex128, paddedLength)
+	for i := 0; i < paddedLength; i++ {
+		multipliedResult[i] = paddedImpulse[i] * paddedCombinedBlock[i]
+	}
+
+	// Apply inverse FFT to the multiplied result
+	fft.Fft(multipliedResult, true)
+
+	// Extract convolved output excluding overlap region
+	convolvedOutput := make([]float64, outputLength)
+	for i := overlapSize; i < outputLength+overlapSize; i++ {
+		convolvedOutput[i-overlapSize] = real(multipliedResult[i])
+	}
+
+	// Update tail for next iteration
+	tail = make([]float64, overlapSize)
+	for i := 0; i < overlapSize; i++ {
+		tail[i] = real(multipliedResult[i+outputLength])
+	}
+
+	return convolvedOutput, tail
+}
+
+func ConvolveImpulsesFFT(impulse, signal []float64) []float64 {
+	impulseLength := len(impulse)
+	signalLength := len(signal)
+	outputLength := impulseLength + signalLength - 1
+	result := make([]float64, outputLength)
+
+	// Pad input arrays to the nearest power of 2
+	paddedLength := int(math.Pow(2, math.Ceil(math.Log2(float64(impulseLength+signalLength-1)))))
+	paddedImpulse := make([]complex128, paddedLength)
+	paddedSignal := make([]complex128, paddedLength)
+
+	// Apply Hamming window to impulse and signal
+	hammingWindowImpulse := hammingWindow(impulseLength)
+	hammingWindowSignal := hammingWindow(signalLength)
 
 	// Map impulse and signal over the length of the padded array with applied window
-	for i := 0; i < length1; i++ {
+	for i := 0; i < impulseLength; i++ {
 		paddedImpulse[i] = complex(impulse[i]*hammingWindowImpulse[i], 0)
 	}
 
-	for i := 0; i < length2; i++ {
+	for i := 0; i < signalLength; i++ {
 		paddedSignal[i] = complex(signal[i]*hammingWindowSignal[i], 0)
 	}
 
@@ -137,24 +198,24 @@ func GenerateImpulseResponse(a0, a1, a2, b0, b1, b2 float64) []float64 {
 	return signal
 }
 
-func CalcBiquadFilter(filterType string, Fc, Fs int, peakGain, width float64, slopeType string) []float64 {
+func CalcBiquadFilter(filterType string, centreFrequency, sampleRate int, peakGain, width float64, slopeType string) []float64 {
 	// Nyquist frequency approximation
 	Nyquist := 0.445
 
-	if Fc < 10 || Fc > 25000 {
-		panic(fmt.Sprintf("Fc should be between 10 and 25000, got: %d", Fc))
+	if centreFrequency < 10 || centreFrequency > 25000 {
+		panic(fmt.Sprintf("frequency should be between 10 and 25000, got: %d", centreFrequency))
 	}
-	if Fs < 10000 || Fs > 400000 {
-		panic(fmt.Sprintf("Fs should be a recognized sample rate, got: %d", Fs))
+	if sampleRate < 10000 || sampleRate > 400000 {
+		panic(fmt.Sprintf("sampleRate should be a recognized sample rate, got: %d", sampleRate))
 	}
 	if peakGain < -30 || peakGain > 20 {
 		panic(fmt.Sprintf("peakGain should be between -30 and +20, got: %f", peakGain))
 	}
 
-	// Adjust Fc if it exceeds Nyquist frequency
-	if float64(Fc)/float64(Fs) > Nyquist {
+	// Adjust frequency if it exceeds Nyquist frequency
+	if float64(centreFrequency)/float64(sampleRate) > Nyquist {
 		// Need to add in Error Logger here.
-		Fc = int(float64(Fs) * Nyquist)
+		centreFrequency = int(float64(sampleRate) * Nyquist)
 	}
 
 	b0, b1, b2, a0, a1, a2, norm := 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0
@@ -171,20 +232,20 @@ func CalcBiquadFilter(filterType string, Fc, Fs int, peakGain, width float64, sl
 		// Correct for the low pass filter rolling off too early
 		desiredLevel := -1.0
 		x := math.Pow(10, desiredLevel/20.0)
-		desiredStartingPoint := float64(Fc) + float64(Fc) - (float64(Fc) * x)
+		desiredStartingPoint := float64(centreFrequency) + float64(centreFrequency) - (float64(centreFrequency) * x)
 
-		Fc = int(desiredStartingPoint)
+		centreFrequency = int(desiredStartingPoint)
 		filterType = "lowpass"
 	}
 
 	if filterType == "highpass" || filterType == "lowcut" {
 		filterType = "highpass"
 		desiredLevel := 2.0
-		desiredStartingPoint := float64(Fc) * math.Sqrt(math.Pow(10, desiredLevel/10.0)-1)
-		Fc = int(desiredStartingPoint)
+		desiredStartingPoint := float64(centreFrequency) * math.Sqrt(math.Pow(10, desiredLevel/10.0)-1)
+		centreFrequency = int(desiredStartingPoint)
 	}
 
-	omega := 2 * math.Pi * float64(Fc) / float64(Fs)
+	omega := 2 * math.Pi * float64(centreFrequency) / float64(sampleRate)
 	coso := math.Cos(omega)
 	sino := math.Sin(omega)
 
@@ -509,7 +570,7 @@ func resampleChannel(inputSamples []float64, fromSampleRate, toSampleRate, quali
 		// Apply filter before resampling to avoid a bump
 		//num := float64(toSampleRate) / float64(fromSampleRate)
 		// Fmax: Nyquist half of destination sampleRate
-		// Fmax / fsr = 0.5
+		// Fmax / sampleRater = 0.5
 		// Apply a low pass before resampling - this has been hand-tested
 		myFilters := [][]float64{CalcBiquadFilter("lowpass", 18000, fromSampleRate, 0, 0.3, "Q")}
 		lowPassImpulse := CascadeFilters(myFilters, 0)

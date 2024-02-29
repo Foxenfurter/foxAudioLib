@@ -53,6 +53,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 			}
 		}
 	}
+
 	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  decide which encoder to use..."))
 
 	// Decide which encoder to use
@@ -279,7 +280,10 @@ func writeOutput(data []byte, filename string) error {
 	if filename == "" {
 		// Write to standard out
 		_, err := os.Stdout.Write(data)
-		return errors.New(packageName + ":" + functionName + ": " + err.Error())
+		if err != nil {
+			return errors.New(packageName + ":" + functionName + ": " + err.Error())
+
+		}
 	} else {
 		// Write to file
 		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)

@@ -1,4 +1,5 @@
-// Package: github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader/foxWavReader.go
+// Package: github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader
+// file foxWavReader.go
 // pkg for encoding a stream into wav format. The package has been specified to allow a header to be written in the initial phase
 // the body to be following this. The package is expected to be called as part of an encoder function. which will run asynchronously
 package foxWavReader
@@ -10,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,7 +18,7 @@ import (
 
 // Structure holds basic information about the Samples to be encoded
 // this is a type neutral representation of the WavHeader structure
-type FoxWavReader struct {
+type WavReader struct {
 	SampleRate     int
 	BitDepth       int
 	NumChannels    int
@@ -28,7 +28,7 @@ type FoxWavReader struct {
 	ByteOrder      binary.ByteOrder
 	wordLength     int
 	bytesPerSample int
-	InputFile      *os.File
+	Input          io.Reader // Changed from *os.File to io.Reader
 	AudioFormat    WaveFormat
 	DebugFunc      func(string)
 }
@@ -63,64 +63,64 @@ const packageName = "FoxWavReader"
 //
 // ------------Getters----------------------------------------
 // GetSampleRate returns the sample rate of the FoxDecoder.
-func (fd *FoxWavReader) GetSampleRate() int {
+func (fd *WavReader) GetSampleRate() int {
 	return fd.SampleRate
 }
 
 // GetBitDepth returns the bit depth of the FoxDecoder.
-func (fd *FoxWavReader) GetBitDepth() int {
+func (fd *WavReader) GetBitDepth() int {
 	return fd.BitDepth
 }
 
 // GetNumChannels returns the number of channels in the FoxDecoder.
-func (fd *FoxWavReader) GetNumChannels() int {
+func (fd *WavReader) GetNumChannels() int {
 	return fd.NumChannels
 }
 
 // GetSize returns the size of the FoxDecoder.
-func (fd *FoxWavReader) GetSize() uint32 {
+func (fd *WavReader) GetSize() uint32 {
 	return fd.Size
 }
 
 // GetReaderCursor returns the reader cursor position of the FoxDecoder.
-func (fd *FoxWavReader) GetReaderCursor() int {
+func (fd *WavReader) GetReaderCursor() int {
 	return fd.ReaderCursor
 }
 
 // SetEndianess sets the Endianess field of FoxDecoder.
-func (fd *FoxWavReader) GetLittleEndian() bool {
+func (fd *WavReader) GetLittleEndian() bool {
 	return fd.LittleEndian
 
 }
 
 // --------------Setters--------------------------------
 // SetSampleRate sets the SampleRate field of FoxDecoder.
-func (fd *FoxWavReader) SetSampleRate(sampleRate int) {
+func (fd *WavReader) SetSampleRate(sampleRate int) {
 	fd.SampleRate = sampleRate
 }
 
 // SetBitDepth sets the BitDepth field of FoxDecoder.
-func (fd *FoxWavReader) SetBitDepth(bitDepth int) {
+func (fd *WavReader) SetBitDepth(bitDepth int) {
 	fd.BitDepth = bitDepth
 }
 
 // SetNumChannels sets the NumChannels field of FoxDecoder.
-func (fd *FoxWavReader) SetNumChannels(numChannels int) {
+func (fd *WavReader) SetNumChannels(numChannels int) {
 	fd.NumChannels = numChannels
 }
 
 // SetSize sets the Size field of FoxDecoder.
-func (fd *FoxWavReader) SetSize(size uint32) {
+func (fd *WavReader) SetSize(size uint32) {
 	fd.Size = size
 }
 
 // SetReaderCursor sets the ReaderCursor field of FoxDecoder.
-func (fd *FoxWavReader) SetReaderCursor(readerCursor int) {
+func (fd *WavReader) SetReaderCursor(readerCursor int) {
 	fd.ReaderCursor = readerCursor
 }
 
 // SetEndianess sets the Endianess field of FoxDecoder.
-func (fd *FoxWavReader) SetLittleEndian(endianNess bool) {
+func (fd *WavReader) SetLittleEndian(endianNess bool) {
 	fd.LittleEndian = endianNess
 }
 
@@ -138,7 +138,7 @@ var sampleFLOAT32 float32
 var sampleFLOAT64 float64
 
 // Byte Converter
-func (FD *FoxWavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) {
+func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) {
 	//functionName:="ConvertBytesToFloat64"
 	//Calculate the expected number of samples from the input buffer NB we are talking fram samples here
 	//copy channels as a minor optimization
@@ -230,7 +230,7 @@ func (FD *FoxWavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, erro
 }
 
 // Function shoudl resume reading the input stream and pass the resulting samples to the output Channel
-func (FD *FoxWavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
+func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	functionName := "DecodeInput"
 	start := time.Now()
 	TotalBytes := 0
@@ -251,7 +251,8 @@ func (FD *FoxWavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) erro
 	EOF := false
 	for {
 		// Read into the read buffer
-		n, err := FD.InputFile.Read(readBuffer[:readBufferSize])
+		n, err := FD.Input.Read(readBuffer[:readBufferSize])
+		//n, err := FD.InputFile.Read(readBuffer[:readBufferSize])
 
 		if err != nil {
 			if err != io.EOF {
@@ -285,21 +286,7 @@ func (FD *FoxWavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) erro
 
 			}
 			DecodedSamplesChannel <- mySamples
-			// We would expect this to be done in a separate goroutine in the final code.
-			//**************************************************************************
-			/*myEncodedBytes, err := CreateWavDataStream(mySamples, myHeader.SampleRate, myHeader.BitDepth)
-			if err != nil {
-				fmt.Println("Error Encoding Bytes:", err)
-				return
-			}
-			// Now write them
 
-			_, err = myOutputTarget.Write(myEncodedBytes)
-			if err != nil {
-				fmt.Println("Error writing:", err)
-				return
-			}*/
-			//**************************************************************************
 			TotalBytes += filledBytes
 			filledBytes = 0
 
@@ -326,20 +313,7 @@ func (FD *FoxWavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) erro
 
 				}
 				DecodedSamplesChannel <- mySamples
-				/*
-					myEncodedBytes, err := CreateWavDataStream(mySamples, myHeader.SampleRate, myHeader.BitDepth)
-					if err != nil {
-						fmt.Println("Error Encoding Bytes:", err)
-						return
-					}
-					// Now write them
 
-					_, err = myOutputTarget.Write(myEncodedBytes)
-					if err != nil {
-						fmt.Println("Error writing:", err)
-						return
-					}
-				*/
 				TotalBytes += filledBytes
 				filledBytes = 0
 
@@ -443,11 +417,11 @@ func mapUint16ToWaveFormat(value uint16) WaveFormat {
 	}
 }
 
-func (w *WaveFile) readBytesFromFile(file *os.File, count int) ([]byte, error) {
-	functionName := "readBytesFromFile"
+func (w *WaveFile) readBytesFromInput(myReader io.Reader, count int) ([]byte, error) {
+	functionName := "readBytesFromInput"
 	buffer := make([]byte, count)
 
-	n, err := file.Read(buffer) // Read directly from the file
+	n, err := myReader.Read(buffer) // Read directly from the file
 	if err != nil {
 		return nil, err
 	}
@@ -460,11 +434,11 @@ func (w *WaveFile) readBytesFromFile(file *os.File, count int) ([]byte, error) {
 	return buffer, nil
 }
 
-func (w *WaveFile) readCharsFromFile(file *os.File, count int) (string, error) {
-	functionName := "readCharsFromFile"
+func (w *WaveFile) readCharsFromInput(myReader io.Reader, count int) (string, error) {
+	functionName := "readCharsFromInput"
 	buffer := make([]byte, count)
 
-	n, err := file.Read(buffer) // Read directly from the file
+	n, err := myReader.Read(buffer) // Read directly from the file
 	if err != nil {
 		return "", err
 	}
@@ -477,11 +451,11 @@ func (w *WaveFile) readCharsFromFile(file *os.File, count int) (string, error) {
 	return string(buffer), nil
 }
 
-func (w *WaveFile) readInt32FromFile(file *os.File) (int32, error) {
-	functionName := "readInt32FromFile"
+func (w *WaveFile) readInt32FromInput(myReader io.Reader) (int32, error) {
+	functionName := "readInt32FromInput"
 	buffer := make([]byte, 4) // Fixed size for int32
 
-	n, err := file.Read(buffer) // Read into buffer
+	n, err := myReader.Read(buffer) // Read into buffer
 
 	if err != nil {
 		return 0, err
@@ -498,11 +472,11 @@ func (w *WaveFile) readInt32FromFile(file *os.File) (int32, error) {
 	return value, nil
 }
 
-func (w *WaveFile) readUInt32FromFile(file *os.File) (uint32, error) {
-	functionName := "readUInt32FromFile"
+func (w *WaveFile) readUInt32FromInput(myReader io.Reader) (uint32, error) {
+	functionName := "readUInt32FromInput"
 	buffer := make([]byte, 4) // Fixed size for int32
 
-	n, err := file.Read(buffer) // Read into buffer
+	n, err := myReader.Read(buffer) // Read into buffer
 
 	if err != nil {
 		return 0, err
@@ -519,12 +493,12 @@ func (w *WaveFile) readUInt32FromFile(file *os.File) (uint32, error) {
 	return value, nil
 }
 
-func (w *WaveFile) readUInt16FromFile(file *os.File) (uint16, error) {
-	functionName := "readUInt16FromFile"
+func (w *WaveFile) readUInt16FromInput(myReader io.Reader) (uint16, error) {
+	functionName := "readUInt16FromInput"
 	var value uint16
 	buffer := make([]byte, 2) // uint16 is 2 bytes
 
-	n, err := file.Read(buffer) // Read directly from the file
+	n, err := myReader.Read(buffer) // Read directly from the file
 
 	if err != nil {
 		return 0, err
@@ -545,13 +519,13 @@ func (w *WaveFile) readUInt16FromFile(file *os.File) (uint16, error) {
 }
 
 // Read Wav File Header
-func (fd *FoxWavReader) DecodeWavHeader() error {
+func (fd *WavReader) DecodeWavHeader() error {
 	functionName := "DecodeWavHeader"
 	var w WaveFile
 	w.ok = false
 	w.pos = 0
 	w.dataOffset = 0
-	hdr, err := w.readCharsFromFile(fd.InputFile, 4)
+	hdr, err := w.readCharsFromInput(fd.Input, 4)
 	if err != nil {
 		return err
 	}
@@ -570,7 +544,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 	}
 
 	// File length
-	fileLen, err := w.readInt32FromFile(fd.InputFile)
+	fileLen, err := w.readInt32FromInput(fd.Input)
 
 	if err != nil {
 		return err
@@ -579,7 +553,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 
 	// Read Wave
 
-	wave, err := w.readCharsFromFile(fd.InputFile, 4)
+	wave, err := w.readCharsFromInput(fd.Input, 4)
 	if err != nil {
 		return err
 	}
@@ -597,14 +571,14 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 		w.length = binary.BigEndian.Uint32(fileLenBytes)
 	}
 	// Read Format
-	w.format, err = w.readCharsFromFile(fd.InputFile, 4)
+	w.format, err = w.readCharsFromInput(fd.Input, 4)
 
 	if err != nil {
 		return err
 	}
 
 	for w.format != "fmt " && w.format != "COMM" {
-		chunkSize, err := w.readInt32FromFile(fd.InputFile)
+		chunkSize, err := w.readInt32FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
@@ -618,11 +592,11 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 			return errors.New(packageName + functionName + ": file could not be read: invalid 'fmt' chunk size")
 		}
 
-		_, err = w.readBytesFromFile(fd.InputFile, int(chunkSize))
+		_, err = w.readBytesFromInput(fd.Input, int(chunkSize))
 		if err != nil {
 			return err
 		}
-		w.format, err = w.readCharsFromFile(fd.InputFile, 4)
+		w.format, err = w.readCharsFromInput(fd.Input, 4)
 		if err != nil {
 			return err
 		}
@@ -631,7 +605,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 	// Continue with the 'fmt' chunk processing...
 	if w.format == "fmt " {
 		// WAV file-format chunk
-		w.size, err = w.readUInt32FromFile(fd.InputFile)
+		w.size, err = w.readUInt32FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
@@ -640,7 +614,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 		}
 
 		// lookup audio format key
-		audioFormatKey, err := w.readUInt16FromFile(fd.InputFile)
+		audioFormatKey, err := w.readUInt16FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
@@ -648,45 +622,45 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 
 		if w.audioFormat == PCM || w.audioFormat == ADPCM || w.audioFormat == IEEE_FLOAT ||
 			w.audioFormat == INTERNAL_DOUBLE || w.audioFormat == EXTENSIBLE {
-			w.numChannels, err = w.readUInt16FromFile(fd.InputFile)
+			w.numChannels, err = w.readUInt16FromInput(fd.Input)
 			if err != nil {
 				return err
 			}
-			w.sampleRate, err = w.readUInt32FromFile(fd.InputFile)
+			w.sampleRate, err = w.readUInt32FromInput(fd.Input)
 			if err != nil {
 				return err
 			}
-			w.byteRate, err = w.readUInt32FromFile(fd.InputFile)
+			w.byteRate, err = w.readUInt32FromInput(fd.Input)
 			if err != nil {
 				return err
 			}
-			w.blockAlign, err = w.readUInt16FromFile(fd.InputFile)
+			w.blockAlign, err = w.readUInt16FromInput(fd.Input)
 			if err != nil {
 				return err
 			}
-			w.bitsPerSample, err = w.readUInt16FromFile(fd.InputFile)
+			w.bitsPerSample, err = w.readUInt16FromInput(fd.Input)
 			if err != nil {
 				return err
 			}
 			if w.size > 16 {
 				skip := uint32(16)
 				if w.audioFormat == EXTENSIBLE {
-					_, err = w.readUInt16FromFile(fd.InputFile)
+					_, err = w.readUInt16FromInput(fd.Input)
 
 					if err != nil {
 						return err
 					}
-					_, err = w.readUInt16FromFile(fd.InputFile)
+					_, err = w.readUInt16FromInput(fd.Input)
 
 					if err != nil {
 						return err
 					}
-					w.channelMask, err = w.readUInt32FromFile(fd.InputFile)
+					w.channelMask, err = w.readUInt32FromInput(fd.Input)
 					if err != nil {
 						return err
 					}
 
-					guidBytes, err := w.readBytesFromFile(fd.InputFile, 16)
+					guidBytes, err := w.readBytesFromInput(fd.Input, 16)
 					if err != nil {
 						return err
 					}
@@ -702,7 +676,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 					}
 				}
 				// Read and discard the rest of the 'fmt' structure
-				_, err := w.readBytesFromFile(fd.InputFile, int(w.size-skip))
+				_, err := w.readBytesFromInput(fd.Input, int(w.size-skip))
 
 				if err != nil {
 					return err
@@ -715,7 +689,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 	} else if w.format == "COMM" {
 		// Continue with the 'COMM' chunk processing...
 		// AIFF file-format chunk
-		w.size, err = w.readUInt32FromFile(fd.InputFile)
+		w.size, err = w.readUInt32FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
@@ -724,22 +698,22 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 		}
 
 		w.audioFormat = PCM
-		w.numChannels, err = w.readUInt16FromFile(fd.InputFile)
+		w.numChannels, err = w.readUInt16FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
 		//numFrames
-		_, err := w.readUInt32FromFile(fd.InputFile)
+		_, err := w.readUInt32FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
-		w.bitsPerSample, err = w.readUInt16FromFile(fd.InputFile)
+		w.bitsPerSample, err = w.readUInt16FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
 
 		// SampleRate is 10-byte IEEE_extended format.
-		ext, err := w.readBytesFromFile(fd.InputFile, 10)
+		ext, err := w.readBytesFromInput(fd.Input, 10)
 		if err != nil {
 			return err
 		}
@@ -760,7 +734,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 
 		if w.size > 18 {
 			// Read and discard the rest of the 'COMM' structure
-			_, err := w.readBytesFromFile(fd.InputFile, int(w.size-18))
+			_, err := w.readBytesFromInput(fd.Input, int(w.size-18))
 
 			if err != nil {
 				return err
@@ -772,13 +746,13 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 	}
 
 	// Read Data
-	w.data, err = w.readCharsFromFile(fd.InputFile, 4)
+	w.data, err = w.readCharsFromInput(fd.Input, 4)
 	if err != nil {
 		return err
 	}
 	// Seek for data chunk
 	for w.data != "data" && w.data != "SSND" {
-		miscSize, err := w.readInt32FromFile(fd.InputFile)
+		miscSize, err := w.readInt32FromInput(fd.Input)
 		if err != nil {
 			return err
 		}
@@ -791,17 +765,17 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 			miscSize = int32(binary.BigEndian.Uint32(miscSizeBytes))
 		}
 
-		_, err = w.readBytesFromFile(fd.InputFile, int(miscSize))
+		_, err = w.readBytesFromInput(fd.Input, int(miscSize))
 		if err != nil {
 			return err
 		}
-		w.data, err = w.readCharsFromFile(fd.InputFile, 4)
+		w.data, err = w.readCharsFromInput(fd.Input, 4)
 		if err != nil {
 			return err
 		}
 		//	w.dataOffset += 4
 	}
-	w.dataSize, err = w.readUInt32FromFile(fd.InputFile)
+	w.dataSize, err = w.readUInt32FromInput(fd.Input)
 	if err != nil {
 		return err
 	}
@@ -879,7 +853,7 @@ func (fd *FoxWavReader) DecodeWavHeader() error {
 }
 
 // Function to handle debug calls, allowing for different logging implementations
-func (myDecoder *FoxWavReader) debug(message string) {
+func (myDecoder *WavReader) debug(message string) {
 
 	if myDecoder.DebugFunc != nil {
 		myDecoder.DebugFunc(message)

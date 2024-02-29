@@ -1,4 +1,5 @@
-// Package: github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxAudioDecoder.go
+// Package: github.com/Foxenfurter/foxAudioLib/foxAudioDecoder
+// filename foxAudioDecoder.go
 // package calls a decoder  based upon the supplied format
 // and then processes the returned bytestream
 // either to standardd out or to the supplied file name
@@ -32,7 +33,7 @@ type AudioDecoder struct {
 	Size        uint32 // Size of the audio data
 	Type        string
 	Filename    string // Added for file reading
-	WavDecoder  *foxWavReader.FoxWavReader
+	WavDecoder  *foxWavReader.WavReader
 	FrameSample int
 	DebugFunc   func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 
@@ -60,8 +61,8 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	// Decide which encoder to use
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
-		myDecoder.WavDecoder = &foxWavReader.FoxWavReader{}
-		myDecoder.WavDecoder.InputFile = myFile
+		myDecoder.WavDecoder = &foxWavReader.WavReader{}
+		myDecoder.WavDecoder.Input = myFile
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Init the header
 		myDecoder.WavDecoder.DecodeWavHeader()
@@ -108,6 +109,9 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	return nil
 }
 
+// Should call the lower level function and pass in the Channel to be used for transmitting decoded samples
+// Throttle Loadre is optional and enables the Decoder to limit the speed of the loader.
+// Current version of wav loader does not need throttling
 func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64, ThrottleLoaderChannel chan time.Duration) error {
 	const functionName = "DecodeSamples"
 	switch strings.ToUpper(myDecoder.Type) {

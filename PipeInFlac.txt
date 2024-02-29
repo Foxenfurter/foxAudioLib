@@ -1,0 +1,1 @@
+flac -dcs --totally-silent  C:\Users\jonat\Music\Resolution\Pencil_1644.flac | foxAudioLib.exe

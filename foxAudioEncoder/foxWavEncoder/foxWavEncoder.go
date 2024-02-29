@@ -66,7 +66,7 @@ func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	// Write the data chunk header to the buffer
 	headerBuffer.WriteString("data")
 	binary.Write(headerBuffer, binary.LittleEndian, int32(dataSize))
-	fmt.Println("foxWavEncoder: DataSize: ", uint32(dataSize))
+	//fmt.Println("foxWavEncoder: DataSize: ", uint32(dataSize))
 	return headerBuffer.Bytes(), nil
 }
 

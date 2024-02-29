@@ -1,3 +1,7 @@
+github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12 h1:dd7vnTDfjtwCETZDrRe+GPYNLA1jBtbZeyfyE8eZCyk=
+github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12/go.mod h1:i/KKcxEWEO8Yyl11DYafRPKOPVYTrhxiTRigjtEEXZU=
+github.com/zeozeozeo/gomplerate v0.0.0-20221111211105-a97684dfe86a h1:cg5nciV+rXB4N4jx+VQkbsG3yVBP9iAPt3jN4vFPx5U=
+github.com/zeozeozeo/gomplerate v0.0.0-20221111211105-a97684dfe86a/go.mod h1:ASuMFHITnaVdPvMkoDGI4tTwYG9fW7Mxv2j5AuvTo8Q=
 scientificgo.org/fft v0.0.0 h1:8nq6H5e0HY9ba+aie7+vz8an5xdBQZ7a2rnyZ3iQCHo=
 scientificgo.org/fft v0.0.0/go.mod h1:RAwyHm5LB0BYJ5LcHBZO6wo2brPH2kuIFLgC0P+O260=
 scientificgo.org/testutil v0.0.0/go.mod h1:Go6R4b+9YkFocMo3H3vNQ7tjbrX9Rc12wal7NZjvPXg=

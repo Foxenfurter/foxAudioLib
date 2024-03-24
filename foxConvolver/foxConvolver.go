@@ -5,15 +5,10 @@
 package foxConvolver
 
 import (
-	"bytes"
-	"fmt"
 	"math"
 	"math/cmplx"
-	"os/exec"
-	"strconv"
 
-	"github.com/Foxenfurter/foxAudioLib/foxPEQ"
-
+	gofft "github.com/argusdusty/gofft"
 	"scientificgo.org/fft"
 )
 
@@ -21,129 +16,44 @@ const packageName = "foxConvolver"
 
 // Convolver represents a convolver structure
 type Convolver struct {
-	Impulse         []float64    // Impulse response
-	ImpulseLength   int          // Length of the impulse response
-	WindowedImpulse []float64    // Windowed impulse response
-	OverlapFactor   float64      // Overlap factor
-	OverlapLength   int          // Length of overlap
-	HopSize         int          // Hop size
-	OverlapTail     []complex128 // Overlap tail
-	DebugFunc       func(string)
-	WarningFunc     func(string)
+	FilterImpulse     []float64 // Impulse response
+	impulseLength     int       // Length of the impulse response
+	signalBlockLength int       // Length of signal block
+	overlapLength     int       // Length of overlap
+	paddedLength      int       // Length of padded impulse response
+	outputLength      int
+	impulseFFT        []complex128
+	overlapTail       []float64 // Overlap tail
+	Buffer            []float64 // Buffer to manage difference between streamed signal size and target size for convolution
+	buffer            []float64
+	//streaming         bool
+	DebugFunc   func(string)
+	WarningFunc func(string)
+}
+
+func (myConvolver *Convolver) GetPaddedLength() int {
+	return myConvolver.paddedLength
+
 }
 
 // Init initializes the convolver structure
 // supply FIR filter impulse and overlap factor as a value between 0.1 and 0.9
-func NewConvolver(impulse []float64, overlapFactor float64) Convolver {
+func NewConvolver(impulse []float64) Convolver {
 	newConvolver := Convolver{
-		Impulse:       impulse,
-		ImpulseLength: len(impulse),
+		FilterImpulse: impulse,
 	}
 
-	// Apply Hamming window to impulse
-	newConvolver.WindowedImpulse = make([]float64, newConvolver.ImpulseLength)
-	hammingWindow := hammingWindow(newConvolver.ImpulseLength)
-	for i := 0; i < newConvolver.ImpulseLength; i++ {
-		newConvolver.WindowedImpulse[i] = impulse[i] * hammingWindow[i]
-	}
-
-	// Calculate overlap length, hop size, and overlap tail
-	newConvolver.OverlapFactor = math.Max(0.1, math.Min(overlapFactor, 0.9))
-	newConvolver.OverlapLength = int(float64(newConvolver.ImpulseLength) * newConvolver.OverlapFactor)
-	newConvolver.HopSize = newConvolver.ImpulseLength - newConvolver.OverlapLength + 1
-	newConvolver.OverlapTail = make([]complex128, newConvolver.OverlapLength-1)
 	return newConvolver
 }
 
-func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader, error) {
-	mySampleRate := strconv.Itoa(targetSampleRate)
-	//myCmd := "sox " + filePath + " --norm=-0.2  -r " + mySampleRate + " -t wav -"
-	myCmd := "sox " + filePath + " -r " + mySampleRate + " -t  wav -"
-	println(myCmd)
-	//cmd := exec.Command(myCmd)
-	//cmd := exec.Command("sox", filePath, "-r", mySampleRate, "-t", "wav", "-n", "-b", "16", "-q", "-")
-	cmd := exec.Command("sox", filePath, "-r", mySampleRate, "-t", "wav", "-q", "-")
-	// Create a bytes.Buffer to capture the output
-	var out bytes.Buffer
-	cmd.Stdout = &out
-
-	// Run the command
-	err := cmd.Run()
-	if err != nil {
-		println("Error running sox command, err: ", err)
-		return nil, err
-	}
-
-	// The output is now in the 'out' buffer.
-	// You can convert it to a bytes.Reader with bytes.NewReader()
-	myReader := bytes.NewReader(out.Bytes())
-	return myReader, nil
+// Allows the impulse to be changed, but forces the length to be updated and nominally wrong so that
+// the convolver process will recalulcate PaddedLength and FilterImpulseFFT values
+func (myConvolver *Convolver) AmendFilterImpulse(impulse []float64) {
+	myConvolver.FilterImpulse = impulse
 
 }
 
-func CalculateFFT(input []complex128) []complex128 {
-	n := len(input)
-	if n == 1 {
-		return []complex128{input[0]}
-	}
-
-	// Calculate the twiddle factor
-	exp := cmplx.Rect(1, -2*math.Pi/float64(n))
-	wn := complex(1, 0)
-
-	// Divide the input into two halves
-	a0 := CalculateFFT(input[:n/2])
-	a1 := CalculateFFT(input[n/2:])
-
-	// Combine the results using FFT formula
-	result := make([]complex128, n)
-	for i := range result {
-		if i >= n/2 {
-			wn *= exp
-		}
-		result[i] = a0[i%(n/2)] + wn*a1[i%(n/2)]
-	}
-
-	return result
-}
-
-// const FilterLength = 4000
-func CalculateInverseFFT(input []complex128) []complex128 {
-	n := len(input)
-	if n == 1 {
-		return []complex128{input[0]}
-	}
-
-	// Calculate the twiddle factor
-	exp := cmplx.Rect(1, 2*math.Pi/float64(n))
-	wn := complex(1, 0)
-
-	// Divide the input into two halves
-	a0 := CalculateInverseFFT(input[:n/2])
-	a1 := CalculateInverseFFT(input[n/2:])
-
-	// Combine the results using IFFT formula
-	result := make([]complex128, n)
-	for i := range result {
-		if i >= n/2 {
-			wn *= exp
-		}
-		result[i] = a0[i%(n/2)] + wn*a1[i%(n/2)]
-	}
-
-	return result
-}
-
-func hammingWindow(length int) []float64 {
-	window := make([]float64, length)
-	alpha := 0.54
-	beta := 0.46
-	for i := 0; i < length; i++ {
-		window[i] = alpha - beta*math.Cos(2*math.Pi*float64(i)/float64(length-1))
-	}
-	return window
-}
-
+// convert an arry of float64 to complex128 using input as the real numbers
 func convertFloat64ToComplex128(data []float64) []complex128 {
 	converted := make([]complex128, len(data))
 	for i := range data {
@@ -152,57 +62,245 @@ func convertFloat64ToComplex128(data []float64) []complex128 {
 	return converted
 }
 
-func ConvolveImpulseOverlapSave(impulse, signalBlock []float64, savedOverlap []complex128) ([]float64, []complex128) {
-	impulseLength := len(impulse)
-	blockLength := len(signalBlock)
-	overlapSize := impulseLength - 1
+// convert an arry of complex128 back to float64 extracting real numbers
+func convertComplex128ToFloat64(data []complex128) []float64 {
+	converted := make([]float64, len(data))
+	for i, r := range data {
+		converted[i] = real(r)
+	}
+	return converted
+}
 
-	// Pad arrays to the nearest power of 2
-	paddedLength := int(math.Pow(2, math.Ceil(math.Log2(float64(impulseLength+blockLength-overlapSize)))))
-	paddedImpulse := make([]complex128, paddedLength)
-	paddedSignal := make([]complex128, paddedLength)
+// return the next power of 2 that is greater than the input
+func NextPowerOf2(x int) int {
+	return int(math.Pow(2, math.Ceil(math.Log2(float64(x)))))
+}
 
-	// Fill padded impulse array
-	for i := 0; i < impulseLength; i++ {
-		paddedImpulse[i] = complex(impulse[i], 0)
+func DustyConvolver(signalBlock []float64, impulse []float64) []float64 {
+
+	cmplxSignal := gofft.Float64ToComplex128Array(signalBlock)
+	cmplximpulse := gofft.Float64ToComplex128Array(impulse)
+	output, err := gofft.Convolve(cmplxSignal, cmplximpulse)
+	if err != nil {
+		println("Error with dusty")
+	}
+	return gofft.Complex128ToFloat64Array(output)
+}
+
+func (myConvolver *Convolver) DustyConvolver(signalBlock []float64) []float64 {
+	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+		return signalBlock
+	}
+	//println("Filter Length: ", len(myConvolver.FilterImpulse), " FilterImpulse length: ", myConvolver.impulseLength)
+	// Check to see if any inputs to the calculation have changed and recalulate if necessary
+	if len(myConvolver.FilterImpulse) != myConvolver.impulseLength || len(signalBlock) != myConvolver.signalBlockLength {
+
+		println("Using Dusty...")
+		myConvolver.signalBlockLength = len(signalBlock)           // L
+		myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
+
+		myConvolver.overlapLength = myConvolver.impulseLength    // M-1
+		myConvolver.outputLength = myConvolver.signalBlockLength //equal to L
+		// we have pre-computed the signal block length
+		myConvolver.paddedLength = (myConvolver.signalBlockLength + myConvolver.overlapLength) - 1 // L+M-1 = N -- not technically necessary for next power of 2
+		myConvolver.impulseFFT = gofft.Float64ToComplex128Array(myConvolver.FilterImpulse)
+		myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
+
 	}
 
-	// Fill padded signal array with saved overlap and new signal block (zero padding if necessary)
-	copy(paddedSignal, savedOverlap)
-	copy(paddedSignal[overlapSize:], convertFloat64ToComplex128(signalBlock))
-	if blockLength < overlapSize {
-		for i := blockLength; i < overlapSize; i++ {
-			paddedSignal[i+overlapSize] = complex(0, 0) // Zero padding
+	cmplxSignal := append(myConvolver.overlapTail, (signalBlock)...)
+	// now create next tail - it needs to be done pre-convolution
+	start := len(cmplxSignal) - myConvolver.overlapLength
+	end := start + myConvolver.overlapLength
+
+	myConvolver.overlapTail = cmplxSignal[start:end]
+
+	output, err := gofft.Convolve(gofft.Float64ToComplex128Array(cmplxSignal), myConvolver.impulseFFT)
+
+	if err != nil {
+		println("Error with dusty")
+	}
+	start = myConvolver.overlapLength
+	end = start + myConvolver.signalBlockLength
+
+	return gofft.Complex128ToFloat64Array(output[start:end])
+}
+
+//Convolver using Overlap and save method. Allows for signal to be sent in blocks e.g. streaming or via channels
+
+func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float64 {
+	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+		return signalBlock
+	}
+	//println("Filter Length: ", len(myConvolver.FilterImpulse), " FilterImpulse length: ", myConvolver.impulseLength)
+	// Check to see if any inputs to the calculation have changed and recalulate if necessary
+	if len(myConvolver.FilterImpulse) != myConvolver.impulseLength || len(signalBlock) != myConvolver.signalBlockLength {
+
+		myConvolver.signalBlockLength = len(signalBlock) // L
+		myConvolver.InitForStreaming()
+
+	}
+
+	overlappedSignal := append(myConvolver.overlapTail, (signalBlock)...)
+	// make sure that the signal is the same length as the padded filter.
+	if myConvolver.paddedLength > len(overlappedSignal) {
+		signalPadding := make([]float64, myConvolver.paddedLength-len(overlappedSignal))
+		overlappedSignal = append(overlappedSignal, signalPadding...)
+	}
+	// now create next tail - it needs to be done pre-convolution - ignore any padding
+	start := myConvolver.overlapLength + myConvolver.signalBlockLength - myConvolver.overlapLength
+	end := start + myConvolver.overlapLength
+
+	myConvolver.overlapTail = overlappedSignal[start:end]
+	if len(overlappedSignal) != len(myConvolver.impulseFFT) {
+		println("signal length: ", len(overlappedSignal), " Impulse: ", len(myConvolver.impulseFFT))
+		return signalBlock
+	}
+	//now do the convolution
+
+	output := myConvolver.convolve(convertFloat64ToComplex128(overlappedSignal))
+	start = myConvolver.overlapLength
+	end = start + myConvolver.signalBlockLength
+
+	//return output[start:end]
+	return output[start:end]
+}
+
+// minamalistic convolver computes fft and of signal and pre-computed fft for filter
+// returns the complex value
+// func (myConvolver *Convolver) convolve(signal, filter []complex128) []complex128 {
+func (myConvolver *Convolver) convolve(signal []complex128) []float64 {
+
+	signal = fft.Fft(signal, false)
+	for i := 0; i < len(signal); i++ {
+		signal[i] *= myConvolver.impulseFFT[i]
+
+	}
+	return convertComplex128ToFloat64(fft.Fft(signal, true))
+}
+
+// Initialise Convolver for Streaming convolution - prebuilds the Impulse FFT and sets up the overlap
+// calculates the target size for the signal
+func (myConvolver *Convolver) InitForStreaming() {
+	// Check to see if any inputs to the calculation have changed and recalulate if necessary
+	myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
+	myConvolver.overlapLength = myConvolver.impulseLength      // M-1
+	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
+	// we have pre-computed the signal block length
+	myConvolver.paddedLength = NextPowerOf2(4 * myConvolver.impulseLength)
+	//myConvolver.paddedLength = (myConvolver.signalBlockLength + myConvolver.overlapLength) // L+M-1 = N -- not technically necessary for next power of 2
+	//
+	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
+	// copy impulse into the padded impulse
+	for i := 0; i < myConvolver.impulseLength; i++ {
+		paddedFilterImpulse[i] = complex(myConvolver.FilterImpulse[i], 0)
+	}
+	// Fill remainder of padded impulse array with zeros
+	for i := myConvolver.impulseLength; i < len(paddedFilterImpulse); i++ {
+		paddedFilterImpulse[i] = complex(0, 0)
+	}
+	myConvolver.impulseFFT = fft.Fft(paddedFilterImpulse, false)
+	myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
+
+}
+
+// Initialise Convolver for normal FFT type convolution & prebuilds the ImpulseFFT
+func (myConvolver *Convolver) initNormal(ImpulseLength int, SignalBlockLength int) {
+	// Check to see if any inputs to the calculation have changed and recalulate if necessary
+	if ImpulseLength == 0 {
+		//Houston we have a problem
+		return
+	}
+	myConvolver.impulseLength = ImpulseLength         // M
+	myConvolver.signalBlockLength = SignalBlockLength //L
+	// multiplying by 4 is arbitrary - seems a reasonable compromise between performance and latency
+	myConvolver.paddedLength = NextPowerOf2(max(ImpulseLength, SignalBlockLength)) //N
+	myConvolver.outputLength = myConvolver.signalBlockLength                       //equal to L
+	// we have pre-computed the signal block length
+	//println("paddedLength: ", myConvolver.paddedLength, " FilterImpulse length: ", myConvolver.impulseLength, " signal: ", myConvolver.signalBlockLength)
+	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
+	// copy impulse into the padded impulse
+	for i := 0; i < myConvolver.impulseLength; i++ {
+		paddedFilterImpulse[i] = complex(myConvolver.FilterImpulse[i], 0)
+	}
+	// Fill remainder of padded impulse array with zeros
+	for i := myConvolver.impulseLength; i < len(paddedFilterImpulse); i++ {
+		paddedFilterImpulse[i] = complex(0, 0)
+	}
+	myConvolver.impulseFFT = fft.Fft(paddedFilterImpulse, false)
+
+}
+
+// Convolver optimized for go channels. Reads an Input Channel and Sends to an output Channel
+// Processing size is optimised for FFT performance hence is derived from the impulse length
+// Must use overlap and save mechanism for convolving to avoid dropouts and other glitches.
+func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalChannel chan []float64) {
+	myConvolver.InitForStreaming()
+	totalProcessed := 0
+	targetSignalLength := myConvolver.GetPaddedLength() - len(myConvolver.FilterImpulse)
+
+	println("targetSignalLength", targetSignalLength)
+	for inputBlock := range inputSignalChannel {
+		totalProcessed += len(inputBlock)
+		if len(myConvolver.FilterImpulse) == 0 {
+			// Nothing to convolve with so just hand on the input
+			outputSignalChannel <- inputBlock
+
+		} else {
+			// The convolver has a buffer for accumulating and managing the signal
+			// adding to it here...
+			myConvolver.Buffer = append(myConvolver.Buffer, inputBlock...)
+			for {
+				if len(myConvolver.Buffer) >= targetSignalLength {
+					// handling OLS properly ~ 0.6s
+
+					outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer[:targetSignalLength])
+					// reposition the buffer
+
+					myConvolver.Buffer = myConvolver.Buffer[targetSignalLength:]
+
+				} else {
+					//means that we need to get more data.
+					break
+				}
+			}
+		}
+	}
+	if len(myConvolver.Buffer) > 0 {
+		// flush the remaining data in the buffer
+		outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer)
+		myConvolver.Buffer = make([]float64, 0)
+	}
+
+	println("Remaining Data in Buffer: ", len(myConvolver.Buffer), " Samples convolved: ", totalProcessed)
+	println("Convolver Closing Channel: ")
+	close(outputSignalChannel)
+
+}
+
+// Simple convolver multiplication calculation for baseline testing, setup to use pre fft Impulse
+func (myConvolver *Convolver) ConvolveSlow(signalBlock []float64) []float64 {
+	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+		return signalBlock
+	}
+	// Calculate output length based on convolution formula
+	outputLength := len(myConvolver.FilterImpulse) + len(signalBlock) - 1
+
+	// Initialize result slice with zeros
+	result := make([]float64, outputLength)
+
+	// Perform convolution using nested loops
+	for i := 0; i < len(signalBlock); i++ {
+		for j := 0; j < len(myConvolver.FilterImpulse); j++ {
+			result[i+j] += myConvolver.FilterImpulse[j] * signalBlock[i]
 		}
 	}
 
-	// Apply FFT to both padded input arrays
-	paddedImpulse = fft.Fft(paddedImpulse, false)
-	paddedSignal = fft.Fft(paddedSignal, false)
-
-	// Multiply the transformed arrays element-wise
-	multipliedResult := make([]complex128, paddedLength)
-	for i := 0; i < paddedLength; i++ {
-		multipliedResult[i] = paddedImpulse[i] * paddedSignal[i]
-	}
-
-	// Apply inverse FFT to the multiplied result
-	multipliedResult = fft.Fft(multipliedResult, true)
-
-	// Extract the real part and discard the overlap
-	result := make([]float64, blockLength)
-	for i := 0; i < blockLength; i++ {
-		result[i] = real(multipliedResult[i+overlapSize])
-	}
-
-	// Extract the new overlap for the next iteration
-	copy(savedOverlap, multipliedResult[:overlapSize])
-
-	return result, savedOverlap
+	return result[:len(signalBlock)]
 }
 
 // Simple convolver multiplication calculation for baseline testing
-func ConvolveImpulsesSlow(impulse1 []float64, impulse2 []float64) []float64 {
+func ConvolveSlow(impulse1 []float64, impulse2 []float64) []float64 {
 	// Calculate output length based on convolution formula
 	outputLength := len(impulse1) + len(impulse2) - 1
 
@@ -216,74 +314,24 @@ func ConvolveImpulsesSlow(impulse1 []float64, impulse2 []float64) []float64 {
 		}
 	}
 
-	return result[:]
-}
-
-// use convolver directly without precomputed Impulse values and then convolve signal
-// the impulse is the filter that you want to apply and the signal is what you want to apply it to - and output
-// the original signal length will be kept
-func ConvolveImpulsesFFT(impulse, signal []float64) []float64 {
-	impulseLength := len(impulse)
-	signalLength := len(signal)
-	outputLength := impulseLength + signalLength - 1
-	result := make([]float64, outputLength)
-
-	// Pad input arrays to the nearest power of 2
-	paddedLength := int(math.Pow(2, math.Ceil(math.Log2(float64(impulseLength+signalLength-1)))))
-	paddedImpulse := make([]complex128, paddedLength)
-	paddedSignal := make([]complex128, paddedLength)
-
-	// Map impulse and signal over the length of the padded array with applied window
-	for i := 0; i < impulseLength; i++ {
-		//	paddedImpulse[i] = complex(impulse[i]*hammingWindowImpulse[i], 0)
-		paddedImpulse[i] = complex(impulse[i], 0)
-	}
-
-	for i := 0; i < signalLength; i++ {
-		paddedSignal[i] = complex(signal[i], 0)
-	}
-
-	// Apply FFT to both padded input arrays
-	//println("Using Tukey FFT")
-	//paddedImpulse = TukeyFFT(paddedImpulse)
-	//paddedSignal = TukeyFFT(paddedSignal)
-
-	paddedImpulse = fft.Fft(paddedImpulse, false)
-	paddedSignal = fft.Fft(paddedSignal, false)
-
-	// Multiply the transformed arrays element-wise
-	multipliedResult := make([]complex128, paddedLength)
-	for i := 0; i < paddedLength; i++ {
-		multipliedResult[i] = paddedImpulse[i] * paddedSignal[i]
-	}
-
-	// Apply inverse FFT to the multiplied result
-	multipliedResult = fft.Fft(multipliedResult, true)
-	//multipliedResult = InverseTukeyFFT(multipliedResult)
-
-	// Extract the real part and assign it to the result array
-	for i := 0; i < outputLength; i++ {
-		result[i] = real(multipliedResult[i])
-	}
-
-	return result[:signalLength]
+	return result
 }
 
 // use convolver structure with precomputed Impulse values and then convolve signal
-func (myConvolver *Convolver) ConvolveImpulsesFFT(signal []float64) []float64 {
-
+func (myConvolver *Convolver) ConvolveFFT(signal []float64) []float64 {
+	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+		return signal
+	}
 	signalLength := len(signal)
-	outputLength := myConvolver.ImpulseLength + signalLength - 1
-	result := make([]float64, outputLength)
 
-	// Pad input arrays to the nearest power of 2
-	paddedLength := int(math.Pow(2, math.Ceil(math.Log2(float64(outputLength)))))
-	paddedImpulse := make([]complex128, paddedLength)
-	paddedSignal := make([]complex128, paddedLength)
+	myConvolver.initNormal(len(myConvolver.FilterImpulse), signalLength)
 
-	for i := 0; i < myConvolver.ImpulseLength; i++ {
+	paddedImpulse := make([]complex128, myConvolver.paddedLength)
+	paddedSignal := make([]complex128, myConvolver.paddedLength)
 
-		paddedImpulse[i] = complex(myConvolver.Impulse[i], 0)
+	for i := 0; i < myConvolver.impulseLength; i++ {
+
+		paddedImpulse[i] = complex(myConvolver.FilterImpulse[i], 0)
 	}
 
 	for i := 0; i < signalLength; i++ {
@@ -291,318 +339,12 @@ func (myConvolver *Convolver) ConvolveImpulsesFFT(signal []float64) []float64 {
 		paddedSignal[i] = complex(signal[i], 0)
 	}
 
-	// Apply FFT to both padded input arrays
-	paddedImpulse = fft.Fft(paddedImpulse, false)
-	paddedSignal = fft.Fft(paddedSignal, false)
+	myConvolver.impulseFFT = fft.Fft(paddedImpulse, false)
+	//using a temporary variable for readability
+	output := myConvolver.convolve(paddedSignal)
+	//now truncate output back to original signal length
+	return output[:signalLength]
 
-	// Multiply the transformed arrays element-wise
-	multipliedResult := make([]complex128, paddedLength)
-	for i := 0; i < paddedLength; i++ {
-		multipliedResult[i] = paddedImpulse[i] * paddedSignal[i]
-	}
-
-	// Apply inverse FFT to the multiplied result
-	multipliedResult = fft.Fft(multipliedResult, true)
-
-	// Extract the real part and assign it to the result array
-	for i := 0; i < outputLength; i++ {
-		result[i] = real(multipliedResult[i])
-	}
-	// truncate the result back to the original signal length
-	return result[:signalLength]
-}
-
-// Calculate the target gain level based on the sampling frequency
-// parameters: Sample Rate (int) returns the target gain level as float64
-func TargetGain(fromSampleRate, toSampleRate int) float64 {
-	// Let's normalize EQ Impulse
-	NormaliseRatio := float64(fromSampleRate) / float64(toSampleRate)
-	var targetLevel float64
-
-	// 0.05 too high, 0.025 too low
-	if toSampleRate == 192000 || toSampleRate == 176000 {
-		// I have tweaked the formula for highest sample rate
-
-		targetLevel = 0.96 * (NormaliseRatio + (0.01 * 1 / NormaliseRatio))
-	} else {
-		targetLevel = 0.96 * (NormaliseRatio + (0.035 * 1 / NormaliseRatio))
-	}
-
-	return targetLevel
-}
-
-// Calculates the Maximum Gain Value - used for Normalization functions
-func CalculateMaxGain(audioData []float64) float64 {
-	maxGain := 0.0
-	if audioData == nil {
-		return maxGain
-	}
-	for _, sample := range audioData {
-		sampleAbs := math.Abs(sample)
-		if sampleAbs > maxGain {
-			maxGain = sampleAbs
-		}
-	}
-	return maxGain
-}
-
-// Normalises and audio signal to the target level and calculate  a max level.
-// Max Level is therefore only for the current channel
-func NormalizeAudioImpulseTrue(audioImpulse []float64, targetLevel float64) []float64 {
-	if len(audioImpulse) == 0 {
-		return audioImpulse
-	}
-
-	// Calculate max absolute value
-	maxGain := math.Abs(audioImpulse[0])
-	for _, sample := range audioImpulse {
-		absSample := math.Abs(sample)
-		if absSample > maxGain {
-			maxGain = absSample
-		}
-	}
-
-	// True normalization (scale to unit amplitude)
-	normalizedImpulse := make([]float64, len(audioImpulse))
-	for i := range audioImpulse {
-		normalizedImpulse[i] = audioImpulse[i] / maxGain
-	}
-
-	// Apply target gain to achieve desired level
-	targetGain := targetLevel / maxGain
-	for i := range normalizedImpulse {
-		normalizedImpulse[i] *= targetGain
-	}
-
-	return normalizedImpulse
-}
-
-// Normalises and audio signal to the target level using a max and target level.
-// Max Level has been pre-calculated across all channels
-func normalizeAudioImpulse(audioImpulse []float64, targetLevel float64, max float64) []float64 {
-	// Check for divide by zero and no normalization needed
-	println("NormalizeAudioImpulse max:", max, " target:", targetLevel)
-	if max == 0.0 || max == targetLevel {
-		return audioImpulse
-	}
-
-	// Calculate the normalization factor
-	normalizationFactor := targetLevel / max
-
-	// Normalize the audio impulse
-	normalizedImpulse := make([]float64, len(audioImpulse))
-	for i := range audioImpulse {
-		normalizedImpulse[i] = audioImpulse[i] * normalizationFactor
-	}
-
-	return normalizedImpulse
-}
-
-// Normalizes Audio Data in supplied samples
-func Normalize(inputSamples [][]float64, targetLevel float64) float64 {
-	// Find max gain on all channels
-	impulseGain := 0.0
-	for _, channel := range inputSamples {
-		impulseGain = max(CalculateMaxGain(channel), math.Abs(impulseGain))
-
-	}
-	if impulseGain == 0 {
-		return impulseGain
-	}
-
-	// Normalize gain
-	for i := range inputSamples {
-		inputSamples[i] = normalizeAudioImpulse(inputSamples[i], targetLevel, impulseGain) // Replace with actual implementation
-		//inputSamples[i] = NormalizeAudioImpulseTrue(inputSamples[i], targetLevel)
-
-		//inputSamples[i] = normalizeAudio(inputSamples[i], impulseGain)
-	}
-
-	return impulseGain
-}
-
-// Downsample as this is proving poor from accuracy pov
-func downsample(input []float64, fromRate, toRate int) []float64 {
-	// Calculate the decimation factor
-
-	decimationFactor := fromRate / toRate
-
-	// Create a slice to hold the downsampled signal
-	output := make([]float64, len(input)/decimationFactor)
-
-	// Perform the decimation
-	for i := range output {
-		output[i] = input[i*decimationFactor]
-	}
-
-	return output
-}
-
-func downsampleComplex(input []float64, fromRate, toRate int) []float64 {
-
-	K := float64(fromRate) / float64(toRate)
-	var output []float64
-	println("Downsample Output length:", len(input)/int(K), " input:", len(input), " K: ", K)
-	// Downsample
-
-	for n := 1; n <= len(input)/int(K); n++ {
-		m := K * float64(n)
-		mi := int(math.Floor(m))
-		if mi < (len(input)/int(K))-1 {
-			d := m - float64(mi)
-			output = append(output, input[mi]*(d)+(1-d)*input[mi-1])
-		} else {
-			println("Mi: ", mi, " n:", n)
-			break
-		}
-
-	}
-	return output
-
-}
-
-// Resample channels using linear interpolation as a basis for benchmarking
-func resampleLinear(input []float64, inRate, outRate int) []float64 {
-	ratio := float64(inRate) / float64(outRate)
-	output := make([]float64, int(float64(len(input))/ratio))
-	println("resampling linear")
-	for i := range output {
-		inIndex := float64(i) * ratio
-		inIndexInt := int(inIndex)
-		frac := inIndex - float64(inIndexInt)
-
-		if inIndexInt+1 < len(input) {
-			output[i] = input[inIndexInt]*(1-frac) + input[inIndexInt+1]*frac
-		} else {
-			output[i] = input[inIndexInt]
-		}
-	}
-
-	return output
-}
-
-// So far the best solution for internal resampling, although it works well for upsampling and poorly for downsampling
-func resampleChannel(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
-	// If no resampling required
-	if fromSampleRate == toSampleRate {
-		return inputSamples, nil
-	}
-
-	// Best so far, slight hump where low pass filter is applied.
-	var samples []float64
-
-	srcLength := len(inputSamples)
-	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
-	dx := float64(srcLength) / float64(destLength)
-	//ideally we low pass filters at Nyquist of from sampling rate. reality is it doesn't matter much
-	if fromSampleRate < 8800 {
-		// Apply filter before resampling to avoid a bump
-		//num := float64(toSampleRate) / float64(fromSampleRate)
-		// Fmax: Nyquist half of destination sampleRate
-		// Fmax / sampleRater = 0.5
-		// Apply a low pass before resampling - this has been hand-tested
-		myLowPassFilter := foxPEQ.NewPEQFilter(fromSampleRate, 15)
-
-		err := myLowPassFilter.CalcBiquadFilter("lowpass", 22000, 0, 3.2, "Q")
-		//myFilter, err := foxPEQ.CalcBiquadFilter("lowpass", 18000, fromSampleRate, 0, 0.3, "Q")
-		if err != nil {
-			return inputSamples, err
-		}
-		// the cascade filters needs a slice of coefficients
-		//myFilters := make(foxPEQ.CoefficientsSlice, 0)
-		//myFilters.Add(myFilter)
-		myLowPassFilter.GenerateFilterImpulse()
-		myConvolver := NewConvolver(myLowPassFilter.Impulse, 0.5)
-
-		inputSamples = myConvolver.ConvolveImpulsesFFT(inputSamples)
-	}
-
-	fmaxDivSR := 0.5
-	rG := 2 * fmaxDivSR
-
-	// Quality is half the window width
-	quality = 10
-
-	wndWidth2 := quality
-	wndWidth := quality * 2
-
-	x := 0.0
-	var rY, rW, rA, rSnc float64
-	var tau, j int
-	for i := 0; i < destLength; i++ {
-		rY = 0.0
-		for tau = -wndWidth2; tau < wndWidth2; tau++ {
-			// Input sample index
-			j = int(x + float64(tau))
-
-			// Hann Window. Scale and calculate sinc
-			rW = 0.5 - 0.5*math.Cos(2*math.Pi*(0.5+(float64(j)-x)/float64(wndWidth)))
-			rA = 2 * math.Pi * (float64(j) - x) * fmaxDivSR
-			rSnc = 1.0
-			if rA != 0 {
-				rSnc = math.Sin(rA) / rA
-			}
-
-			if j >= 0 && j < srcLength {
-				rY += rG * rW * rSnc * inputSamples[j]
-			}
-		}
-		samples = append(samples, rY)
-		x += dx
-	}
-
-	return samples, nil
-}
-
-// resample all input samples from fromSampleRate toSampleRate
-func (myConvolver *Convolver) Resample(inputSamples [][]float64, fromSampleRate, toSampleRate, quality int) error {
-	const errorPrefix = packageName + ":" + "resampler"
-	if quality == 0 {
-		quality = 10
-	}
-	var err error
-	if fromSampleRate == toSampleRate {
-		myConvolver.warning(fmt.Sprintf(errorPrefix + "writing header.."))
-		return nil
-
-	}
-
-	myChannelsLength := len(inputSamples)
-	for c := 0; c < myChannelsLength; c++ {
-		// Tried various methods of optimising downsampling, but basically downsampling from 192000 to 44100 is just bad.
-
-		inputSamples[c], err = resampleChannel(inputSamples[c], fromSampleRate, toSampleRate, quality)
-		if err != nil {
-			return err
-		}
-
-		/* Various experiments, non-better than original code
-		//upsample
-		if fromSampleRate < toSampleRate {
-			inputSamples[c], err = resampleChannel(inputSamples[c], fromSampleRate, toSampleRate, quality)
-			if err != nil {
-				return err
-			}
-		} else {
-			inputSamples[c], err = resampleChannel(inputSamples[c], fromSampleRate, toSampleRate, quality)
-
-			//downsample
-			// experiment to upsample to a multiple of both 192000 and 44100
-			//inputSamples[c], err = resampleChannel(inputSamples[c], 192000, 28224000, quality)
-			if err != nil {
-				return err
-			}
-			// and then downsample back to 44100
-			//inputSamples[c] = downsample(inputSamples[c], 28224000, 44100)
-			//inputSamples[c], err = resampleChannel(inputSamples[c], 28224000, 44100, quality)
-			//inputSamples[c] = resampleLinear(inputSamples[c], fromSampleRate, toSampleRate)
-		}
-
-		//inputSamples[c] = resampleLinear(inputSamples[c], fromSampleRate, toSampleRate)
-		*/
-	}
-
-	return nil
 }
 
 // Function to handle debug calls, allowing for different logging implementations
@@ -672,4 +414,56 @@ func InverseTukeyFFT(X []complex128) []complex128 {
 	}
 
 	return x
+}
+
+func CalculateFFT(input []complex128) []complex128 {
+	n := len(input)
+	if n == 1 {
+		return []complex128{input[0]}
+	}
+
+	// Calculate the twiddle factor
+	exp := cmplx.Rect(1, -2*math.Pi/float64(n))
+	wn := complex(1, 0)
+
+	// Divide the input into two halves
+	a0 := CalculateFFT(input[:n/2])
+	a1 := CalculateFFT(input[n/2:])
+
+	// Combine the results using FFT formula
+	result := make([]complex128, n)
+	for i := range result {
+		if i >= n/2 {
+			wn *= exp
+		}
+		result[i] = a0[i%(n/2)] + wn*a1[i%(n/2)]
+	}
+
+	return result
+}
+
+func CalculateInverseFFT(input []complex128) []complex128 {
+	n := len(input)
+	if n == 1 {
+		return []complex128{input[0]}
+	}
+
+	// Calculate the twiddle factor
+	exp := cmplx.Rect(1, 2*math.Pi/float64(n))
+	wn := complex(1, 0)
+
+	// Divide the input into two halves
+	a0 := CalculateInverseFFT(input[:n/2])
+	a1 := CalculateInverseFFT(input[n/2:])
+
+	// Combine the results using IFFT formula
+	result := make([]complex128, n)
+	for i := range result {
+		if i >= n/2 {
+			wn *= exp
+		}
+		result[i] = a0[i%(n/2)] + wn*a1[i%(n/2)]
+	}
+
+	return result
 }

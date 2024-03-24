@@ -201,6 +201,7 @@ func (PEQ *PEQFilter) CalcBiquadFilter(filterType string, frequency, peakGain, w
 	}
 
 	switch filterType {
+
 	case "lowpass":
 		norm = 1 / (1.0 + alpha)
 
@@ -288,6 +289,8 @@ func (PEQ *PEQFilter) CalcBiquadFilter(filterType string, frequency, peakGain, w
 	PEQ.FilterCoefficients.Add(myCoefficients)
 	return nil
 }
+
+// EOF ex[ero,emta;]
 
 // Usage:
 /*

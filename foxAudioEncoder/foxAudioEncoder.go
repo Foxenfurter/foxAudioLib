@@ -26,8 +26,8 @@ type AudioEncoder struct {
 	Filename    string // Added filename field
 
 	DebugFunc func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
-
-	encoder EncoderInterface
+	DebugOn   bool         //enables debugging
+	encoder   EncoderInterface
 }
 
 // each Encoder must have these methods defined
@@ -38,7 +38,9 @@ type EncoderInterface interface {
 
 // Constructor for Encoder
 func (myEncoder *AudioEncoder) Initialise() error {
+
 	const functionName = "Initialise"
+
 	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating Header..."))
 	var err error
 	// Remove existing file if it exists and a filename is provided
@@ -302,11 +304,11 @@ func writeOutput(data []byte, filename string) error {
 
 // Function to handle debug calls, allowing for different logging implementations
 func (myEncoder *AudioEncoder) debug(message string) {
-
-	if myEncoder.DebugFunc != nil {
-		myEncoder.DebugFunc(message)
-	} else { // if no external debug function available just print the message
-		println(message)
+	if myEncoder.DebugOn {
+		if myEncoder.DebugFunc != nil {
+			myEncoder.DebugFunc(message)
+		} else { // if no external debug function available just print the message
+			println(message)
+		}
 	}
-
 }

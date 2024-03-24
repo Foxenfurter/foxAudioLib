@@ -235,11 +235,11 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	start := time.Now()
 	TotalBytes := 0
 
-	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8)
+	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
 
 	// Smaller buffer for accumulating data
 	// No need to Flush the processing buffer as we are re-using and controlling the read cursor
-	readBufferSize := 1000                     // Adjust as needed
+	readBufferSize := 1000                     // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
 	if readBufferSize > processingBufferSize { //We don't want the read buffer to be bigger than the processing buffer
 		readBufferSize = processingBufferSize
 	}
@@ -252,7 +252,6 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	for {
 		// Read into the read buffer
 		n, err := FD.Input.Read(readBuffer[:readBufferSize])
-		//n, err := FD.InputFile.Read(readBuffer[:readBufferSize])
 
 		if err != nil {
 			if err != io.EOF {
@@ -275,8 +274,6 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 			filledBytes += readCursor
 
 			// convert the bytes to Samples of the correct bitDepth
-
-			// We may do this in a separate go routine in the final code
 
 			mySamples, err := FD.ConvertBytesToFloat64(processingBuffer[:filledBytes])
 			if err != nil {

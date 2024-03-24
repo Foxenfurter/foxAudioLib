@@ -146,7 +146,7 @@ func round(f float64) float64 {
 
 func TestPEQvsSoXImpulse(t *testing.T) {
 	println("Testing PEQ vs SoXImpulse")
-	sampleRate := 44100
+	sampleRate := 192000
 	bitDepth := 24
 
 	dtStartRun := time.Now()
@@ -189,13 +189,14 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 	//Filename: "c:\\temp\\Pencil_1644.wav", // Replace with your test file
 	//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
 	//Filename: "c:\\temp\\Opera_with_Sub_REW_96k.wav",
-	//Filename: "c:\\temp\\96000_0069465CE0_Impulses_Cavern4Opera.wav",
-	//Filename: "c:\\temp\\CavernLeft.wav", // Replace with your test file
-	myFirFile := "c:\\temp\\OperaExperiment-192k.wav"
+	//Filename: "c:\\temp\\96000_0069465CcE0_Impulses_Cavern4Opera.wav",
+	//Filename:	"c:\\temp\\CavernLeft.wav", // Replace with your test file
+	//myFirFile := "c:\\temp\\OperaExperiment-192k.wav"
 	//myFirFile := "c:\\temp\\96000_Impulses_Cavern4Iloud.wav"
 	//Filename: "c:\\temp\\Loudness_yz.wav", // Replace with your test file
 	/* Examples Using Sox as a file resampler*/
 	//myFirFile := "c:\\temp\\OperaExperiment-192k.wav"
+	myFirFile := "c:\\temp\\CavernLeft.wav"
 	myFirReader, err := foxConvolver.ReadnResampleFirFile(myFirFile, sampleRate)
 	if err != nil {
 		println("Error reading and resampling file: ", err)
@@ -223,7 +224,7 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 
 	// Close the doneProcessing channel to signal that decoding is finished
 	fmt.Println("Test: Setting up Convolver")
-	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse, 0.5)
+	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse)
 	var myConvolvedSignal []float64
 	//Sox
 	//targetLevel := foxConvolver.TargetGain(mySoXDecoder.SampleRate, int(sampleRate))
@@ -250,12 +251,13 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 
 			//_ = foxConvolver.Normalize(decodedResult, targetLevel)
 
-			//myConvolvedSignal = foxConvolver.ConvolveImpulsesSlow(myConvolver.Impulse, decodedResult[0])
+			//myConvolvedSignal = foxConvolver.ConvolveSlow(myConvolver.Impulse, decodedResult[0])
 
 			//myConvolvedSignal = foxConvolver.ConvolveImpulsesSimple(decodedResult[0], myConvolver.Impulse)
 			//myConvolvedSignal = append(myConvolvedSignal,myConvolver.ConvolveImpulsesFFTOverlap(decodedResult[0])[:]...)
 			// Build up the result by appending the samples from the channel
-			myConvolvedSignal = append(myConvolvedSignal, myConvolver.ConvolveImpulsesFFT(decodedResult[0])[:]...)
+			myTemp := myConvolver.ConvolveFFT(decodedResult[0])
+			myConvolvedSignal = append(myConvolvedSignal, myTemp[:]...)
 			copyRawImpulse = append(copyRawImpulse, (decodedResult[0])[:]...)
 
 		}
@@ -319,7 +321,7 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 	testImpulseFilename = "c://temp//ConvolverPEQImpulseSoX.wav"
 
 	myEncoder.Filename = testImpulseFilename
-	OutputSignal = [][]float64{myConvolver.Impulse}
+	OutputSignal = [][]float64{myConvolver.FilterImpulse}
 	dataSize = len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
 	myEncoder.Size = int64(dataSize)
 	err = myEncoder.Initialise()
@@ -354,7 +356,7 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 
 func TestPEQConvolveVsImpulse(t *testing.T) {
 	println("Testing PEQ Convolve Vs Impulese")
-	sampleRate := 192000
+	sampleRate := 176400
 	bitDepth := 24
 
 	dtStartRun := time.Now()
@@ -398,10 +400,10 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	myInternalDecoder := &foxAudioDecoder.AudioDecoder{
 		//Filename: "c:\\temp\\Pencil_1644.wav", // Replace with your test file
 		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_1644.wav",
-		Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
+		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
 		//Filename: "c:\\temp\\Opera_with_Sub_REW_96k.wav",
 		//Filename: "c:\\temp\\96000_0069465CE0_Impulses_Cavern4Opera.wav",
-		//Filename: "c:\\temp\\CavernLeft.wav", // Replace with your test file
+		Filename: "c:\\temp\\CavernLeft.wav", // Replace with your test file
 		//Filename: "c:\\temp\\OperaExperiment-192k.wav",
 		//Filename: "c:\\temp\\96000_Impulses_Cavern4Iloud.wav",
 		//Filename: "c:\\temp\\Loudness_yz.wav", // Replace with your test file
@@ -426,7 +428,7 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 
 	// Close the doneProcessing channel to signal that decoding is finished
 	fmt.Println("Test: Setting up Convolver")
-	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse, 0.5)
+	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse)
 	myConvolvedSignal := make([]float64, 0)
 	//Internal
 	targetLevel := foxConvolver.TargetGain(myInternalDecoder.SampleRate, int(sampleRate))
@@ -439,8 +441,8 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	WG.Add(1)
 	go func() {
 		var ResultCounter int
-		var overlaptail []complex128 //[]float64
-		var tempConv []float64
+
+		//var tempConv []float64
 		defer WG.Done()
 		for decodedResult := range DecodedSamplesChannel {
 			// Discard decoded results
@@ -449,8 +451,8 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 			ResultCounter += len(decodedResult[0])
 			//fmt.Println("Test: Convolving", ResultCounter)
 			//resamples in place
-
-			err = myConvolver.Resample(decodedResult, myInternalDecoder.SampleRate, sampleRate, 0)
+			// quality 30 is pretty good
+			err = myConvolver.Resample(decodedResult, myInternalDecoder.SampleRate, sampleRate, 10)
 			if err != nil {
 				println("Error resampling: ", err.Error())
 				return
@@ -464,18 +466,12 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 			//myConvolvedSignal = append(myConvolvedSignal, myConvolver.ConvolveImpulsesFFT(decodedResult[0])[:]...)
 
 			//seems to be working
-			tempConv, overlaptail = foxConvolver.ConvolveImpulseOverlapSave(myConvolver.Impulse, decodedResult[0], overlaptail)
+			//tempConv = myConvolver.ConvolveImpulseOverlapSave(decodedResult[0])
+			//tempConv = myConvolver.ConvolveImpulsesFFT(decodedResult[0])
 
-			myConvolvedSignal = append(myConvolvedSignal, tempConv...)
+			myConvolvedSignal = append(myConvolvedSignal, myConvolver.ConvolveFFT(decodedResult[0])...)
+			//myConvolvedSignal = append(myConvolvedSignal, myConvolver.ConvolveImpulseOverlapSave(decodedResult[0])...)
 			copyRawImpulse = append(copyRawImpulse, (decodedResult[0])[:]...)
-
-		}
-		// if there is any tail left
-
-		if len(overlaptail) > 0 {
-			//myConvolvedSignal = append(myConvolvedSignal, myConvolver.ConvolveImpulsesFFT(overlaptail)[:]...)
-			//tempConv, _ = foxConvolver.ConvolveImpulsesOverlapAdd(myConvolver.Impulse, overlaptail, nil)
-			//myConvolvedSignal = append(myConvolvedSignal, tempConv...)
 
 		}
 
@@ -493,7 +489,7 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	fmt.Println("Setting up Encoder: ", targetLevel)
 	OutputSignal := [][]float64{myConvolvedSignal}
 	//Normalisation here lowers the level of 24 bit and drops a bit from output
-	//_ = foxConvolver.Normalize(OutputSignal, targetLevel)
+	_ = foxConvolver.Normalize(OutputSignal, targetLevel)
 	fmt.Println("calculate data Size")
 	dataSize := len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
 	testImpulseFilename := "c:/temp/ConvolvedImpulse2.wav"
@@ -504,6 +500,7 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 		NumChannels: 1,
 		Size:        int64(dataSize), // Size for a 5-second file (adjust as needed)
 		Filename:    testImpulseFilename,
+		DebugOn:     false,
 	}
 	fmt.Println("Test: Creating new Encoder...")
 	// Create encoder
@@ -540,7 +537,7 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	testImpulseFilename = "c://temp//ConvolverPEQImpulse.wav"
 
 	myEncoder.Filename = testImpulseFilename
-	OutputSignal = [][]float64{myConvolver.Impulse}
+	OutputSignal = [][]float64{myConvolver.FilterImpulse}
 	dataSize = len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
 	myEncoder.Size = int64(dataSize)
 	err = myEncoder.Initialise()
@@ -572,6 +569,394 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	fmt.Printf("Time taken: %s\n", time.Since(dtStartRun))
 }
 
+func TestFIRConvolvePrototype(t *testing.T) {
+	println("")
+	println("")
+	println("Testing FIR Convolve")
+	println("============================================================")
+	dtStartRun := time.Now()
+
+	var err error
+	mySignalDecoder := &foxAudioDecoder.AudioDecoder{
+		Filename: "c:\\Users\\jonat\\Music\\Resolution\\Pencil_1644.wav", // Replace with your test file
+		Type:     "Wav",
+	}
+
+	fmt.Println("Test: Decoding input file... ", mySignalDecoder.Filename)
+	err = mySignalDecoder.Initialise()
+	if err != nil {
+		t.Fatalf("Test: Error initializing AudioDecoder: %v", err)
+	}
+	bitDepth := 24
+	sampleRate := mySignalDecoder.SampleRate
+
+	/* Examples using internal Resampler*/
+
+	myFIRDecoder := &foxAudioDecoder.AudioDecoder{
+		//Filename: "c:\\temp\\Pencil_1644.wav", // Replace with your test file
+		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_1644.wav",
+		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
+		//Filename: "c:\\temp\\Opera_with_Sub_REW_96k.wav",
+		//Filename: "c:\\temp\\96000_0069465CE0_Impulses_Cavern4Opera.wav",
+		Filename: "c:\\temp\\CavernLeft.wav", // Replace with your test file
+		//Filename: "c:\\temp\\OperaExperiment-192k.wav",
+		//Filename: "c:\\temp\\96000_Impulses_Cavern4Iloud.wav",
+		//Filename: "c:\\temp\\Loudness_yz.wav", // Replace with your test file
+
+		Type: "Wav",
+	}
+
+	fmt.Println("Test: Decoding input file... ", myFIRDecoder.Filename)
+	err = myFIRDecoder.Initialise()
+	if err != nil {
+		t.Fatalf("Test: Error initializing AudioDecoder: %v", err)
+	}
+
+	var dWG sync.WaitGroup
+	DecodedSamplesChannel := make(chan [][]float64, 10)
+	dWG.Add(1)
+	go func() {
+		defer dWG.Done()
+		myFIRDecoder.DecodeSamples(DecodedSamplesChannel, nil)
+	}()
+
+	// Close the doneProcessing channel to signal that decoding is finished
+	fmt.Println("Test: Setting up Convolver")
+	myConvolver := foxConvolver.Convolver{}
+	myImpulse := make([][]float64, myFIRDecoder.NumChannels)
+	//Internal
+	targetLevel := foxConvolver.TargetGain(myFIRDecoder.SampleRate, int(sampleRate))
+
+	//Test zeozeozeo resampler
+	if err != nil {
+		panic(err)
+	}
+
+	dWG.Add(1)
+	go func() {
+		var ResultCounter int
+
+		//var tempConv []float64
+		defer dWG.Done()
+		for decodedResult := range DecodedSamplesChannel {
+			ResultCounter += len(decodedResult[0])
+
+			//Resample Impulse to match signal SampleRate
+			// quality 30 is pretty good
+			err = myConvolver.Resample(decodedResult, myFIRDecoder.SampleRate, sampleRate, 10)
+			if err != nil {
+				println("Error resampling: ", err.Error())
+				return
+			}
+			//Append samples to impulse
+			for i := 0; i < min(len(decodedResult), len(myImpulse)); i++ {
+				myImpulse[i] = append(myImpulse[i], decodedResult[i]...)
+			}
+		}
+		fmt.Println("Test: Length of Impulse", ResultCounter)
+
+	}()
+	fmt.Println("Test: Waiting for FIR to Load")
+	// Wait for the asynchronous decoding to complete
+	dWG.Wait()
+	// normalize impulse
+	_ = foxConvolver.Normalize(myImpulse, targetLevel)
+	// Let's start with a single impulse
+	myConvolver = foxConvolver.NewConvolver(myImpulse[0])
+
+	// easiest way to get a convolver per channel
+	var myConvolvers []foxConvolver.Convolver
+	myConvolvers = append(myConvolvers, myConvolver)
+	if mySignalDecoder.NumChannels == 2 {
+		myConvolvers = append(myConvolvers, myConvolver)
+	}
+	fmt.Println("Test: closing decoder")
+	// Now Start Decoding the Signal channel
+	var sWG sync.WaitGroup
+	DecodedSignalChannel := make(chan [][]float64, 10)
+	OutputSignal := make([][]float64, mySignalDecoder.NumChannels)
+
+	//N
+	N := foxConvolver.NextPowerOf2(4 * len(myConvolver.FilterImpulse))
+	targetSignalLength := N - len(myConvolver.FilterImpulse)
+
+	println("targetSignalLength", targetSignalLength)
+	sWG.Add(1)
+	go func() {
+		defer sWG.Done()
+		mySignalDecoder.DecodeSamples(DecodedSignalChannel, nil)
+	}()
+	sWG.Add(1)
+	go func() {
+		var ResultCounter int
+
+		//use a buffer to hold decoded signal and allow the convolver signal to be optimal length for processing
+		cnvBuffer := make([][]float64, mySignalDecoder.NumChannels)
+		//use a swap buffer to retain data when Optimal length shorter than decoded signal block size
+		cnvBufferSwap := make([][]float64, mySignalDecoder.NumChannels)
+		defer sWG.Done()
+		for decodedResult := range DecodedSignalChannel {
+			ResultCounter += len(decodedResult[0])
+			// each audio channel
+			for i := 0; i < len(decodedResult); i++ {
+				//		OutputSignal[i] = append(OutputSignal[i], myConvolvers[i].BufferedConvolver(decodedResult[i])...)
+				//	}
+				//	}
+				cnvBuffer[i] = append(cnvBuffer[i], decodedResult[i]...)
+
+				for {
+					if len(cnvBuffer[i]) >= targetSignalLength {
+						cnvBufferSwap[i] = cnvBuffer[i][targetSignalLength:]
+						// dropouts ~ 1s
+						//convOut := myConvolvers[i].ConvolveOverlapSave(cnvBuffer[i][:targetSignalLength])
+						// ** No dropouts ~ 1.6s - NB this convolver is not doing this, it is the wrapper
+						// handling OLS properly
+						convOut := myConvolvers[i].DustyConvolver(cnvBuffer[i][:targetSignalLength])
+						// dropouts ~ 1.3s
+						//convOut := myConvolvers[i].ConvolveImpulsesFFT(cnvBuffer[i][:targetSignalLength])
+
+						// works but slow ~ 2 seconds - not sure if it is actually convolving
+						//tmpResult[i] = fftConvolver.Process(tmpResult[i])
+						//dropouts ~ 31 s
+						//convOut := myConvolvers[i].ConvolveImpulsesSlow(cnvBuffer[i][:targetSignalLength])
+
+						OutputSignal[i] = append(OutputSignal[i], convOut...)
+						// copy remaining output back to the temporary store
+						cnvBuffer[i] = cnvBufferSwap[i]
+
+					} else {
+						//means that we need to get more data.
+						break
+					}
+				}
+
+			}
+
+		}
+
+		fmt.Println("Test: Length of Signal", ResultCounter)
+
+	}()
+
+	fmt.Println("Test: Waiting for Signal to Process")
+	// Wait for the asynchronous decoding to complete
+	sWG.Wait()
+	println("TOTAL Convolved signal:", len(OutputSignal[0]))
+
+	fmt.Println("Setting up Encoder: ", targetLevel)
+
+	fmt.Println("calculate data Size")
+	dataSize := len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
+	testImpulseFilename := "c:/temp/ConvolvedSignal.wav"
+	myEncoder := foxAudioEncoder.AudioEncoder{
+		Type:        "Wav",
+		SampleRate:  sampleRate,
+		BitDepth:    bitDepth, // Adjust as needed
+		NumChannels: mySignalDecoder.NumChannels,
+		Size:        int64(dataSize), // Size for a 5-second file (adjust as needed)
+		Filename:    testImpulseFilename,
+		DebugOn:     false,
+	}
+	fmt.Println("Test: Creating new Encoder...")
+	// Create encoder
+	err = myEncoder.Initialise()
+	if err != nil {
+		fmt.Println("Test: panic on New Header...")
+		panic(err)
+	}
+
+	err = myEncoder.EncodeData(OutputSignal)
+	if err != nil {
+		fmt.Println("Test: panic on New Encoder...")
+		panic(err)
+	}
+
+	fmt.Printf("Time taken: %s\n", time.Since(dtStartRun))
+}
+
+func TestFIRConvolve(t *testing.T) {
+
+	println("")
+	println("")
+	println("Testing FIR Convolve")
+	println("============================================================")
+	dtStartRun := time.Now()
+
+	var err error
+	mySignalDecoder := &foxAudioDecoder.AudioDecoder{
+		Filename: "c:\\Users\\jonat\\Music\\Resolution\\Pencil_1644.wav", // Replace with your test file
+		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
+		Type: "Wav",
+	}
+
+	fmt.Println("Test: Decoding input file... ", mySignalDecoder.Filename)
+	err = mySignalDecoder.Initialise()
+	if err != nil {
+		t.Fatalf("Test: Error initializing AudioDecoder: %v", err)
+	}
+	bitDepth := 24
+	sampleRate := mySignalDecoder.SampleRate
+
+	/* Examples using internal Resampler*/
+
+	myFIRDecoder := &foxAudioDecoder.AudioDecoder{
+		//Filename: "c:\\temp\\Pencil_1644.wav", // Replace with your test file
+		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_1644.wav",
+		//Filename: "C:\\Users\\jonat\\Music\\Resolution\\Pencil_24192.wav",
+		//Filename: "c:\\temp\\Opera_with_Sub_REW_96k.wav",
+		//Filename: "c:\\temp\\96000_0069465CE0_Impulses_Cavern4Opera.wav",
+		//Filename: "c:\\temp\\CavernLeft.wav", // Replace with your test file
+		//Filename: "c:\\temp\\OperaExperiment-192k.wav",
+		//Filename: "c:\\temp\\96000_Impulses_Cavern4Iloud.wav",
+		Filename: "c:\\temp\\Loudness_yz.wav", // Replace with your test file
+
+		Type: "Wav",
+	}
+
+	fmt.Println("Test: Decoding input file... ", myFIRDecoder.Filename)
+	err = myFIRDecoder.Initialise()
+	if err != nil {
+		t.Fatalf("Test: Error initializing AudioDecoder: %v", err)
+	}
+
+	var dWG sync.WaitGroup
+	DecodedSamplesChannel := make(chan [][]float64, 10)
+	dWG.Add(1)
+	go func() {
+		defer dWG.Done()
+		myFIRDecoder.DecodeSamples(DecodedSamplesChannel, nil)
+	}()
+
+	// Close the doneProcessing channel to signal that decoding is finished
+	fmt.Println("Test: Setting up Convolver")
+	myConvolver := foxConvolver.Convolver{}
+	myImpulse := make([][]float64, myFIRDecoder.NumChannels)
+	//Internal
+	targetLevel := foxConvolver.TargetGain(myFIRDecoder.SampleRate, int(sampleRate))
+
+	if err != nil {
+		panic(err)
+	}
+
+	dWG.Add(1)
+	go func() {
+		var ResultCounter int
+
+		//var tempConv []float64
+		defer dWG.Done()
+		for decodedResult := range DecodedSamplesChannel {
+			ResultCounter += len(decodedResult[0])
+
+			//Resample Impulse to match signal SampleRate
+			// quality 30 is pretty good
+			err = myConvolver.Resample(decodedResult, myFIRDecoder.SampleRate, sampleRate, 10)
+			if err != nil {
+				println("Error resampling: ", err.Error())
+				return
+			}
+			//Append samples to impulse
+			for i := 0; i < min(len(decodedResult), len(myImpulse)); i++ {
+				myImpulse[i] = append(myImpulse[i], decodedResult[i]...)
+			}
+		}
+		fmt.Println("Test: Length of Impulse", ResultCounter)
+
+	}()
+	fmt.Println("Test: Waiting for FIR to Load")
+	// Wait for the asynchronous decoding to complete
+	dWG.Wait()
+	// normalize impulse
+	_ = foxConvolver.Normalize(myImpulse, targetLevel)
+	// Let's start with a single impulse
+	myConvolver = foxConvolver.NewConvolver(myImpulse[0])
+	// easiest way to get a convolver per channel
+	var myConvolvers []foxConvolver.Convolver
+	myConvolvers = append(myConvolvers, myConvolver)
+	if mySignalDecoder.NumChannels == 2 {
+		myConvolvers = append(myConvolvers, myConvolver)
+	}
+	fmt.Println("Test: closing decoder")
+	// Now Start Decoding the Signal channel
+	var sWG sync.WaitGroup
+	DecodedSignalChannel := make(chan [][]float64, 10)
+	OutputSignal := make([][]float64, mySignalDecoder.NumChannels)
+
+	//N
+
+	sWG.Add(1)
+	go func() {
+		defer sWG.Done()
+		mySignalDecoder.DecodeSamples(DecodedSignalChannel, nil)
+	}()
+	// Create go channel for each audio channel
+	audioChannels := make([]chan []float64, mySignalDecoder.NumChannels)
+	for i := 0; i < mySignalDecoder.NumChannels; i++ {
+		audioChannels[i] = make(chan []float64)
+	}
+	// Split audio data into separate channels
+	channelSplitter(DecodedSignalChannel, audioChannels, mySignalDecoder.NumChannels)
+	// Apply convolution (FIR filter)
+	convolvedChannels := make([]chan []float64, mySignalDecoder.NumChannels)
+
+	sWG.Add(1)
+	go func() {
+		defer sWG.Done()
+		for i := 0; i < mySignalDecoder.NumChannels; i++ {
+
+			convolvedChannels[i] = make(chan []float64)
+			go myConvolvers[i].ConvolveChannel(audioChannels[i], convolvedChannels[i])
+		}
+
+	}()
+
+	fmt.Println("Test: Waiting for Signal to Process")
+	// Wait for the asynchronous decoding to complete
+
+	println("TOTAL Convolved signal:", len(OutputSignal[0]))
+
+	fmt.Println("Setting up Encoder: ", targetLevel)
+
+	fmt.Println("calculate data Size")
+	dataSize := len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
+	testImpulseFilename := "c:/temp/ConvolvedSignalJonny.wav"
+	myEncoder := foxAudioEncoder.AudioEncoder{
+		Type:        "Wav",
+		SampleRate:  sampleRate,
+		BitDepth:    bitDepth, // Adjust as needed
+		NumChannels: mySignalDecoder.NumChannels,
+		Size:        int64(dataSize), // Size for a 5-second file (adjust as needed)
+		Filename:    testImpulseFilename,
+		DebugOn:     false,
+	}
+	fmt.Println("")
+	fmt.Println("Test: Creating new Encoder...")
+	// Create encoder
+	err = myEncoder.Initialise()
+	if err != nil {
+		fmt.Println("Test: panic on New Header...")
+		panic(err)
+	}
+
+	mergedChannel := make(chan [][]float64)
+	sWG.Add(1)
+	go mergeChannels(convolvedChannels, mergedChannel, mySignalDecoder.NumChannels)
+	sWG.Done()
+
+	fmt.Println("Test: Encoding Data...")
+	sWG.Add(1)
+	go func() {
+
+		defer sWG.Done()
+		myEncoder.EncodeSamplesChannel(mergedChannel, nil)
+
+	}()
+
+	sWG.Wait()
+
+	fmt.Printf("Time taken: %s\n", time.Since(dtStartRun))
+
+}
+
 func TestMain(m *testing.M) {
 	// Run tests
 	fmt.Println("Running DSP Test:")
@@ -579,4 +964,58 @@ func TestMain(m *testing.M) {
 
 	// Exit with the test result code
 	os.Exit(exitCode)
+}
+
+// Split audio data into separate channels
+func channelSplitter(inputCh chan [][]float64, outputChs []chan []float64, channelCount int) {
+	totals := 0
+	go func() {
+		for chunk := range inputCh {
+			totals += len(chunk[0])
+			for i := 0; i < channelCount; i++ {
+				channelData := chunk[i]
+				outputChs[i] <- channelData
+			}
+		}
+
+		// Close all output channels after processing
+		for _, ch := range outputChs {
+			close(ch)
+		}
+		println("Split length: ", totals)
+	}()
+}
+
+// Merge audio data from all channels
+func mergeChannels(inputChannels []chan []float64, outputChannel chan [][]float64, numChannels int) {
+	go func() {
+		// Iterate through all input channels
+		for {
+			var mergedChunks [][]float64 // Temporary slice to hold data from each channel
+
+			// Receive data from all channels
+			for i := 0; i < numChannels; i++ {
+				chunk, ok := <-inputChannels[i]
+				if !ok {
+					// Channel closed
+					inputChannels[i] = nil // Mark as closed
+					continue
+				}
+				mergedChunks = append(mergedChunks, chunk)
+			}
+
+			// Break if all channels are closed
+			if len(mergedChunks) == 0 {
+				break
+			}
+
+			// Send merged chunk
+			outputChannel <- mergedChunks
+		}
+
+		// Close the output channel
+
+		println("channelMerger - closing output")
+		close(outputChannel)
+	}()
 }

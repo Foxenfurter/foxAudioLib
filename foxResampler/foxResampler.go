@@ -12,6 +12,8 @@ import (
 	"strconv"
 
 	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
+	"scientificgo.org/fft"
+	//	"github.com/mjibson/go-dsp/fft"
 )
 
 type Resampler struct {
@@ -76,42 +78,67 @@ func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader,
 
 }
 
-// Resample channels using linear interpolation as a basis for benchmarking
-func resampleLinear(input []float64, inRate, outRate int) []float64 {
-	ratio := float64(inRate) / float64(outRate)
-	output := make([]float64, int(float64(len(input))/ratio))
-	println("resampling linear")
+func ResamplerWorking96k(inputSamples []float64, fromSampleRate, toSampleRate int) ([]float64, error) {
+	if fromSampleRate == toSampleRate {
+		return inputSamples, nil
+	}
 
-	for i := range output {
-		inIndex := float64(i) * ratio
-		inIndexInt := int(inIndex)
-		frac := inIndex - float64(inIndexInt)
+	srcLength := len(inputSamples)
+	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
+	output := make([]float64, destLength)
 
-		if inIndexInt+1 < len(input) {
-			output[i] = input[inIndexInt]*(1-frac) + input[inIndexInt+1]*frac
+	// Downsampling (frequency-domain filtering)
+	if toSampleRate < int(float64(fromSampleRate)*1.1) {
+		nyquist := float64(toSampleRate) * 0.5
+		nyquistBin := int(nyquist / float64(fromSampleRate) * float64(srcLength))
+
+		complexSamples := make([]complex128, srcLength)
+		for i := range inputSamples {
+			complexSamples[i] = complex(float64(inputSamples[i]), 0)
+		}
+		fftResult := fft.Fft(complexSamples, false)
+		//fftResult := fft.FFT(complexSamples)
+		// Zero out high frequencies
+		for i := nyquistBin + 1; i < srcLength-nyquistBin; i++ {
+			fftResult[i] = 0
+		}
+
+		ifftResult := fft.Fft(fftResult, true)
+		//ifftResult := fft.IFFT(fftResult)
+		for i := range ifftResult {
+			inputSamples[i] = real(ifftResult[i])
+		}
+
+		srcLength = len(inputSamples)
+		destLength = int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
+		output = make([]float64, destLength)
+	}
+
+	dx := float64(srcLength) / float64(destLength)
+
+	// Upsampling (linear interpolation) or Downsampling (after filter)
+	for i := 0; i < destLength; i++ {
+		x := float64(i) * dx
+		x0 := int(math.Floor(x))
+		x1 := int(math.Ceil(x))
+
+		if x0 < 0 {
+			x0 = 0
+		}
+		if x1 >= srcLength {
+			x1 = srcLength - 1
+		}
+
+		if x0 == x1 {
+			output[i] = inputSamples[x0]
 		} else {
-			output[i] = input[inIndexInt]
+			y0 := inputSamples[x0]
+			y1 := inputSamples[x1]
+			output[i] = y0 + (y1-y0)*(x-float64(x0))
 		}
 	}
 
-	// Apply filter before resampling to avoid a bump
-	//num := float64(toSampleRate) / float64(fromSampleRate)
-	// Fmax: Nyquist half of destination sampleRate
-	// Fmax / sampleRater = 0.5
-	// Apply a low pass before resampling - this has been hand-tested
-	var Fp = 21000.0 // End of pass-band - below this frequency everything should pass
-	var Fs = 22000.0 // Start of stop-band - above this frequency everything should be blocked
-	//var Fn = float64(sampleRate) / 2.0 // Nyquist frequency of original Sample Rate
-	var att = 90.0 // Stop-band attenuation in dB - not sure if it makes much difference
-
-	var k = 0       // Number of phases (not used in this example)
-	var beta = -1.0 // Value will be estimated
-	myLowPassImpulse := designLpf(Fp, Fs, float64(outRate), att, k, beta)
-	//myLowPassFilter := foxPEQ.NewPEQFilter(fromSampleRate, 15)
-	myTConvolver := foxConvolver.NewConvolver(myLowPassImpulse)
-	output = myTConvolver.ConvolveFFT(output)
-
-	return output
+	return output, nil
 }
 
 // So far the best solution for internal resampling, although it works well for upsampling and poorly for downsampling
@@ -199,12 +226,21 @@ func (myResampler *Resampler) Resample() error {
 	for c := 0; c < myChannelsLength; c++ {
 		// Tried various methods of optimising downsampling, but basically downsampling from 192000 to 44100 is just bad.
 		// Various experiments, non-better than original code
-
-		myResampler.InputSamples[c], err = ResampleChannel(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+		if myResampler.FromSampleRate < myResampler.ToSampleRate {
+			//better for upsampling
+			myResampler.debug(fmt.Sprintf(errorPrefix + "upsampling"))
+			myResampler.InputSamples[c], err = ResampleChannel(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+		} else {
+			//better for downsampling?
+			//	myResampler.debug(fmt.Sprintf(errorPrefix + "downsampling"))
+			//myResampler.InputSamples[c], err = resampleDown(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
+			//myResampler.InputSamples[c], err = downSample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
+			myResampler.InputSamples[c], err = ResamplerWorking96k(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
+			//myResampler.InputSamples[c], err = resampleDownold(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
+		}
 		if err != nil {
 			return err
 		}
-
 	}
 
 	return nil

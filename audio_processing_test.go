@@ -83,7 +83,7 @@ func ProcessAudio(inputFile string, outputFile string, targetSampleRate int, tar
 				fmt.Printf("Resampling failed: %v\n", err)
 				continue
 			}
-			ResampledChannel <- samples
+			ResampledChannel <- myResampler.InputSamples
 		}
 		close(ResampledChannel) // Close the channel after resampling
 	}()
@@ -104,7 +104,8 @@ func ProcessAudio(inputFile string, outputFile string, targetSampleRate int, tar
 		}
 		fmt.Println("Test: Ready to Normalize...")
 		targetLevel := 0.89
-		targetLevel = foxNormalizer.TargetGain(myDecoder.SampleRate, myEncoder.SampleRate, targetLevel)
+		targetLevel = foxNormalizer.TargetGainCSharp(myDecoder.SampleRate, myEncoder.SampleRate, targetLevel)
+		fmt.Println("Test: Target Gain: ", targetLevel)
 		foxNormalizer.Normalize(outputSamples, targetLevel)
 		fmt.Println("Test: Outputting...")
 		myEncoder.EncodeData(outputSamples)
@@ -129,7 +130,9 @@ func TestProcessAudio(t *testing.T) {
 	inputFiles := []string{
 		"C:\\temp\\InputFilters\\Cavern4Iloud_44k.wav",
 		"C:\\temp\\InputFilters\\Test_filter-44k.wav",
-		"C:\\temp\\InputFilters\\Test_filter-96k.wav",
+		//	"C:\\temp\\InputFilters\\Test_filter-96k.wav",
+		//"C:\\temp\\InputFilters\\iloudSubMini_44k.wav",
+		"C:\\temp\\InputFilters\\iloudSubMini_96k.wav",
 	}
 	targetSampleRates := []int{96000, 44100, 48000, 192000, 88000}
 	for _, inputFile := range inputFiles {

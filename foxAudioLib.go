@@ -7,7 +7,9 @@ import (
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioEncoder"
 	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
+	"github.com/Foxenfurter/foxAudioLib/foxNormalizer"
 	"github.com/Foxenfurter/foxAudioLib/foxPEQ"
+	"github.com/Foxenfurter/foxAudioLib/foxResampler"
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder"
 )
@@ -225,7 +227,7 @@ func BuildPEQFilters(myPEQFilter *foxPEQ.PEQFilter) error {
 func MergePEQandSingleFIRImpulse(lclPEQFilters *[]foxPEQ.PEQFilter, myImpulseDecoder *foxAudioDecoder.AudioDecoder, TargetSampleRate int) []foxConvolver.Convolver {
 	startTime := time.Now()
 	//tmpConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse)
-	targetLevel := foxConvolver.TargetGain(myImpulseDecoder.SampleRate, TargetSampleRate)
+	targetLevel := foxNormalizer.TargetGain(myImpulseDecoder.SampleRate, TargetSampleRate, 0.89)
 	myConvolvers := make([]foxConvolver.Convolver, len(*lclPEQFilters))
 	myConvolvedSignal := make([][]float64, len(*lclPEQFilters))
 	DecodedImpulseChannel := make(chan [][]float64, 1000)
@@ -261,7 +263,7 @@ func MergePEQandSingleFIRImpulse(lclPEQFilters *[]foxPEQ.PEQFilter, myImpulseDec
 			println("Mono FIR filter & multi-channel Audio - exist")
 			myConvolvers[0].FilterImpulse = (*lclPEQFilters)[0].Impulse
 			myConvolvers[1].FilterImpulse = (*lclPEQFilters)[1].Impulse
-			inputSamples, err := foxConvolver.ResampleChannel(myFirImpulse[0], myImpulseDecoder.SampleRate, TargetSampleRate, 10)
+			inputSamples, err := foxResampler.ResampleChannel(myFirImpulse[0], myImpulseDecoder.SampleRate, TargetSampleRate, 10)
 			//println("Impulse length:", len((myConvolvers)[0].FilterImpulse), "Signal: ", len(inputSamples))
 			if err != nil {
 				println("Error resampling")
@@ -278,7 +280,7 @@ func MergePEQandSingleFIRImpulse(lclPEQFilters *[]foxPEQ.PEQFilter, myImpulseDec
 				//println("Impulse length:", len((myConvolvers)[i].FilterImpulse), "Signal: ", len(myFirImpulse[i]))
 				// Use a channel level resampler
 				//resamples in place - quality 30 is pretty good, 10 is fast
-				inputSamples, err := foxConvolver.ResampleChannel(myFirImpulse[i], myImpulseDecoder.SampleRate, TargetSampleRate, 10)
+				inputSamples, err := foxResampler.ResampleChannel(myFirImpulse[i], myImpulseDecoder.SampleRate, TargetSampleRate, 10)
 				elapsedTime = int(time.Since(startTime).Milliseconds()) - elapsedTime
 				println("AudioLib - Resample: ", elapsedTime)
 
@@ -303,7 +305,7 @@ func MergePEQandSingleFIRImpulse(lclPEQFilters *[]foxPEQ.PEQFilter, myImpulseDec
 
 	fmt.Println("Setting up Encoder: ", targetLevel)
 	//Normalisation here lowers the level of 24 bit
-	_ = foxConvolver.Normalize(myConvolvedSignal, targetLevel)
+	_ = foxNormalizer.Normalize(myConvolvedSignal, targetLevel)
 
 	// Now map the Convolved Signal back to the Convolver
 	for i := 0; i < min(len(myConvolvedSignal), len(myConvolvers)); i++ {

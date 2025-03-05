@@ -25,7 +25,6 @@ type Convolver struct {
 	impulseFFT        []complex128
 	overlapTail       []float64 // Overlap tail
 	Buffer            []float64 // Buffer to manage difference between streamed signal size and target size for convolution
-	buffer            []float64
 	//streaming         bool
 	DebugFunc   func(string)
 	WarningFunc func(string)

@@ -2,7 +2,7 @@
 // filename foxConvolver.go
 // Package is designed to manage convolution of Filter Impulse Responses
 // includes any logic neeeded to prepare the filter for convolution, such as Resampling and Normalization
-package foxConvolver
+package foxResampler
 
 import (
 	"bytes"
@@ -10,7 +10,49 @@ import (
 	"math"
 	"os/exec"
 	"strconv"
+
+	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
 )
+
+type Resampler struct {
+	InputSamples   [][]float64
+	FromSampleRate int
+	ToSampleRate   int
+	Quality        int
+	//streaming         bool
+	DebugFunc   func(string)
+	WarningFunc func(string)
+}
+
+const packageName = "foxResampler"
+
+// Init initializes the convolver structure
+// supply FIR filter impulse and overlap factor as a value between 0.1 and 0.9
+func NewResampler() *Resampler {
+	newResampler := Resampler{
+		//FilterImpulse: impulse,
+		Quality: 0,
+	}
+
+	return &newResampler
+}
+
+// Function to handle debug calls, allowing for different logging implementations
+func (myResampler *Resampler) debug(message string) {
+
+	if myResampler.DebugFunc != nil {
+		myResampler.DebugFunc(message)
+	} else { // if no external debug function available just print the message
+		println(message)
+	}
+
+}
+
+func (myResampler *Resampler) warning(message string) {
+	if myResampler.WarningFunc != nil {
+		myResampler.WarningFunc(message)
+	}
+}
 
 // In case you want to use sox as an input.
 func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader, error) {
@@ -32,82 +74,6 @@ func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader,
 	myReader := bytes.NewReader(out.Bytes())
 	return myReader, nil
 
-}
-
-// Calculate the target gain level based on the sampling frequency
-// parameters: From Sample Rate, To Sample Rate (int) returns the target gain level as float64
-func TargetGain(fromSampleRate, toSampleRate int) float64 {
-	// Let's normalize EQ Impulse
-	NormaliseRatio := float64(fromSampleRate) / float64(toSampleRate)
-	var targetLevel float64
-
-	// 0.05 too high, 0.025 too low
-	if toSampleRate == 192000 || toSampleRate == 176000 {
-		// I have tweaked the formula for highest sample rate
-
-		targetLevel = 0.96 * (NormaliseRatio + (0.01 * 1 / NormaliseRatio))
-	} else {
-		targetLevel = 0.96 * (NormaliseRatio + (0.035 * 1 / NormaliseRatio))
-	}
-
-	return targetLevel
-}
-
-// Calculates the Maximum Gain Value - used for Normalization functions
-func CalculateMaxGain(audioData []float64) float64 {
-	maxGain := 0.0
-	if audioData == nil {
-		return maxGain
-	}
-	for _, sample := range audioData {
-		sampleAbs := math.Abs(sample)
-		if sampleAbs > maxGain {
-			maxGain = sampleAbs
-		}
-	}
-	return maxGain
-}
-
-// Normalises and audio signal to the target level using a max and target level.
-// Max Level has been pre-calculated across all channels
-func normalizeAudioImpulse(audioImpulse []float64, targetLevel float64, max float64) []float64 {
-	// Check for divide by zero and no normalization needed
-	println("NormalizeAudioImpulse max:", max, " target:", targetLevel)
-	if max == 0.0 || max == targetLevel {
-		return audioImpulse
-	}
-
-	// Calculate the normalization factor
-	normalizationFactor := targetLevel / max
-
-	// Normalize the audio impulse
-	normalizedImpulse := make([]float64, len(audioImpulse))
-	for i := range audioImpulse {
-		normalizedImpulse[i] = audioImpulse[i] * normalizationFactor
-	}
-
-	return normalizedImpulse
-}
-
-// Normalizes Audio Data in supplied samples
-func Normalize(inputSamples [][]float64, targetLevel float64) float64 {
-	// Find max gain on all channels
-	impulseGain := 0.0
-	for _, channel := range inputSamples {
-		impulseGain = math.Max(CalculateMaxGain(channel), math.Abs(impulseGain))
-
-	}
-	if impulseGain == 0 {
-		return impulseGain
-	}
-
-	// Normalize gain
-	for i := range inputSamples {
-		inputSamples[i] = normalizeAudioImpulse(inputSamples[i], targetLevel, impulseGain) // Replace with actual implementation
-
-	}
-
-	return impulseGain
 }
 
 // Resample channels using linear interpolation as a basis for benchmarking
@@ -142,7 +108,7 @@ func resampleLinear(input []float64, inRate, outRate int) []float64 {
 	var beta = -1.0 // Value will be estimated
 	myLowPassImpulse := designLpf(Fp, Fs, float64(outRate), att, k, beta)
 	//myLowPassFilter := foxPEQ.NewPEQFilter(fromSampleRate, 15)
-	myTConvolver := NewConvolver(myLowPassImpulse)
+	myTConvolver := foxConvolver.NewConvolver(myLowPassImpulse)
 	output = myTConvolver.ConvolveFFT(output)
 
 	return output
@@ -210,31 +176,31 @@ func ResampleChannel(inputSamples []float64, fromSampleRate, toSampleRate, quali
 	var beta = -1.0 // Value will be estimated
 	myLowPassImpulse := designLpf(Fp, Fs, float64(toSampleRate), att, k, beta)
 	//myLowPassFilter := foxPEQ.NewPEQFilter(fromSampleRate, 15)
-	myTConvolver := NewConvolver(myLowPassImpulse)
+	myTConvolver := foxConvolver.NewConvolver(myLowPassImpulse)
 	samples = myTConvolver.ConvolveFFT(samples)
 
 	return samples, nil
 }
 
 // resample all input samples from fromSampleRate toSampleRate
-func (myConvolver *Convolver) Resample(inputSamples [][]float64, fromSampleRate, toSampleRate, quality int) error {
+func (myResampler *Resampler) Resample() error {
 	const errorPrefix = packageName + ":" + "resampler"
-	if quality == 0 {
-		quality = 10
+	if myResampler.Quality == 0 {
+		myResampler.Quality = 10
 	}
 	var err error
-	if fromSampleRate == toSampleRate {
-		myConvolver.warning(fmt.Sprintf(errorPrefix + "writing header.."))
+	if myResampler.FromSampleRate == myResampler.ToSampleRate {
+		myResampler.debug(fmt.Sprintf(errorPrefix + "writing header.."))
 		return nil
 
 	}
 
-	myChannelsLength := len(inputSamples)
+	myChannelsLength := len(myResampler.InputSamples)
 	for c := 0; c < myChannelsLength; c++ {
 		// Tried various methods of optimising downsampling, but basically downsampling from 192000 to 44100 is just bad.
 		// Various experiments, non-better than original code
-		//inputSamples[c] = resampleLinear(inputSamples[c], fromSampleRate, toSampleRate)
-		inputSamples[c], err = ResampleChannel(inputSamples[c], fromSampleRate, toSampleRate, quality)
+
+		myResampler.InputSamples[c], err = ResampleChannel(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
 		if err != nil {
 			return err
 		}

@@ -11,7 +11,10 @@ import (
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 	"github.com/Foxenfurter/foxAudioLib/foxAudioEncoder" // Import your package
 	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
+	"github.com/Foxenfurter/foxAudioLib/foxNormalizer"
 	"github.com/Foxenfurter/foxAudioLib/foxPEQ"
+	"github.com/Foxenfurter/foxAudioLib/foxResampler"
+
 	goDSP "github.com/mjibson/go-dsp/fft"
 	Sci "scientificgo.org/fft"
 )
@@ -197,7 +200,7 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 	/* Examples Using Sox as a file resampler*/
 	//myFirFile := "c:\\temp\\OperaExperiment-192k.wav"
 	myFirFile := "c:\\temp\\CavernLeft.wav"
-	myFirReader, err := foxConvolver.ReadnResampleFirFile(myFirFile, sampleRate)
+	myFirReader, err := foxResampler.ReadnResampleFirFile(myFirFile, sampleRate)
 	if err != nil {
 		println("Error reading and resampling file: ", err)
 		panic(err)
@@ -225,10 +228,12 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 	// Close the doneProcessing channel to signal that decoding is finished
 	fmt.Println("Test: Setting up Convolver")
 	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse)
+	myResampler := foxResampler.NewResampler()
+
 	var myConvolvedSignal []float64
 	//Sox
 	//targetLevel := foxConvolver.TargetGain(mySoXDecoder.SampleRate, int(sampleRate))
-	targetLevel := foxConvolver.TargetGain(192000, int(sampleRate))
+	targetLevel := foxNormalizer.TargetGain(192000, int(sampleRate), 0.89)
 
 	//Test zeozeozeo resampler
 	var copyRawImpulse []float64
@@ -243,7 +248,11 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 			ResultCounter += len(decodedResult[0])
 			fmt.Println("Test: Convolving", ResultCounter)
 			//resamples in place
-			err = myConvolver.Resample(decodedResult, mySoXDecoder.SampleRate, sampleRate, 0)
+			myResampler.InputSamples = decodedResult
+			myResampler.FromSampleRate = mySoXDecoder.SampleRate
+			myResampler.ToSampleRate = sampleRate
+
+			err = myResampler.Resample()
 			if err != nil {
 				println("Error resampling: ", err.Error())
 				return
@@ -274,7 +283,7 @@ func TestPEQvsSoXImpulse(t *testing.T) {
 
 	fmt.Println("Setting up Encoder")
 	OutputSignal := [][]float64{myConvolvedSignal}
-	_ = foxConvolver.Normalize(OutputSignal, targetLevel)
+	_ = foxNormalizer.Normalize(OutputSignal, targetLevel)
 	fmt.Println("calculate data Size")
 	dataSize := len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
 	testImpulseFilename := "c:/temp/ConvolvedImpulse2SoX.wav"
@@ -430,8 +439,13 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	fmt.Println("Test: Setting up Convolver")
 	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse)
 	myConvolvedSignal := make([]float64, 0)
+	myResampler := foxResampler.NewResampler()
+	// these values do not change
+	myResampler.FromSampleRate = myInternalDecoder.SampleRate
+	myResampler.ToSampleRate = sampleRate
+	myResampler.Quality = 30
 	//Internal
-	targetLevel := foxConvolver.TargetGain(myInternalDecoder.SampleRate, int(sampleRate))
+	targetLevel := foxNormalizer.TargetGain(myInternalDecoder.SampleRate, int(sampleRate), .89)
 
 	//Test zeozeozeo resampler
 	if err != nil {
@@ -452,7 +466,8 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 			//fmt.Println("Test: Convolving", ResultCounter)
 			//resamples in place
 			// quality 30 is pretty good
-			err = myConvolver.Resample(decodedResult, myInternalDecoder.SampleRate, sampleRate, 10)
+			myResampler.InputSamples = decodedResult
+			err = myResampler.Resample()
 			if err != nil {
 				println("Error resampling: ", err.Error())
 				return
@@ -489,7 +504,7 @@ func TestPEQConvolveVsImpulse(t *testing.T) {
 	fmt.Println("Setting up Encoder: ", targetLevel)
 	OutputSignal := [][]float64{myConvolvedSignal}
 	//Normalisation here lowers the level of 24 bit and drops a bit from output
-	_ = foxConvolver.Normalize(OutputSignal, targetLevel)
+	_ = foxNormalizer.Normalize(OutputSignal, targetLevel)
 	fmt.Println("calculate data Size")
 	dataSize := len(OutputSignal[0]) * len(OutputSignal) * (bitDepth / 8)
 	testImpulseFilename := "c:/temp/ConvolvedImpulse2.wav"
@@ -625,7 +640,7 @@ func TestFIRConvolvePrototype(t *testing.T) {
 	myConvolver := foxConvolver.Convolver{}
 	myImpulse := make([][]float64, myFIRDecoder.NumChannels)
 	//Internal
-	targetLevel := foxConvolver.TargetGain(myFIRDecoder.SampleRate, int(sampleRate))
+	targetLevel := foxNormalizer.TargetGain(myFIRDecoder.SampleRate, int(sampleRate), 0.89)
 
 	//Test zeozeozeo resampler
 	if err != nil {
@@ -660,7 +675,7 @@ func TestFIRConvolvePrototype(t *testing.T) {
 	// Wait for the asynchronous decoding to complete
 	dWG.Wait()
 	// normalize impulse
-	_ = foxConvolver.Normalize(myImpulse, targetLevel)
+	_ = foxNormalizer.Normalize(myImpulse, targetLevel)
 	// Let's start with a single impulse
 	myConvolver = foxConvolver.NewConvolver(myImpulse[0])
 
@@ -832,7 +847,7 @@ func TestFIRConvolve(t *testing.T) {
 	myConvolver := foxConvolver.Convolver{}
 	myImpulse := make([][]float64, myFIRDecoder.NumChannels)
 	//Internal
-	targetLevel := foxConvolver.TargetGain(myFIRDecoder.SampleRate, int(sampleRate))
+	targetLevel := foxNormalizer.TargetGain(myFIRDecoder.SampleRate, int(sampleRate), 0.89)
 
 	if err != nil {
 		panic(err)
@@ -866,7 +881,7 @@ func TestFIRConvolve(t *testing.T) {
 	// Wait for the asynchronous decoding to complete
 	dWG.Wait()
 	// normalize impulse
-	_ = foxConvolver.Normalize(myImpulse, targetLevel)
+	_ = foxNormalizer.Normalize(myImpulse, targetLevel)
 	// Let's start with a single impulse
 	myConvolver = foxConvolver.NewConvolver(myImpulse[0])
 	// easiest way to get a convolver per channel

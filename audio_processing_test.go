@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -76,7 +77,27 @@ func ProcessAudio(inputFile string, outputFile string, targetSampleRate int, tar
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
+		minGains := make([]float64, 0)
+		minGainLocations := make([]int, 0)
 		for samples := range DecodedSamplesChannel {
+			// Initialize to -1 to indicate no gain found yet
+			if len(minGains) == 0 {
+				minGains = make([]float64, len(samples))
+				minGainLocations = make([]int, len(samples))
+				for i := range minGainLocations {
+					minGainLocations[i] = -1
+					minGains[i] = 1.0
+				}
+			}
+			for channelIndex, channelSamples := range samples {
+				for sampleIndex, sample := range channelSamples {
+					sampleAbs := math.Abs(sample)
+					if sampleAbs < minGains[channelIndex] && sampleAbs != 0.0 {
+						minGains[channelIndex] = sampleAbs
+						minGainLocations[channelIndex] = sampleIndex
+					}
+				}
+			}
 			myResampler.InputSamples = samples
 			err := myResampler.Resample()
 			if err != nil {
@@ -85,6 +106,9 @@ func ProcessAudio(inputFile string, outputFile string, targetSampleRate int, tar
 			}
 			ResampledChannel <- myResampler.InputSamples
 		}
+
+		fmt.Println("Max Gains:", minGains)
+		fmt.Println("Max Gain Locations:", minGainLocations)
 		close(ResampledChannel) // Close the channel after resampling
 	}()
 
@@ -131,7 +155,7 @@ func TestProcessAudio(t *testing.T) {
 		"C:\\temp\\InputFilters\\Cavern4Iloud_44k.wav",
 		"C:\\temp\\InputFilters\\Test_filter-44k.wav",
 		//	"C:\\temp\\InputFilters\\Test_filter-96k.wav",
-		//"C:\\temp\\InputFilters\\iloudSubMini_44k.wav",
+		"C:\\temp\\InputFilters\\Opera_with_Sub_REW_20230303.wav",
 		"C:\\temp\\InputFilters\\iloudSubMini_96k.wav",
 	}
 	targetSampleRates := []int{96000, 44100, 48000, 192000, 88000}

@@ -6,9 +6,9 @@
 package foxAudioDecoder
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
-
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +30,7 @@ type AudioDecoder struct {
 	SampleRate  int
 	BitDepth    int
 	NumChannels int
+	BigEndian   bool
 	Size        uint32 // Size of the audio data
 	Type        string
 	Filename    string // Added for file reading
@@ -74,6 +75,27 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.SampleRate = int(myDecoder.WavDecoder.SampleRate)
 		myDecoder.NumChannels = int(myDecoder.WavDecoder.NumChannels)
 
+		// If the input buffer is bigger then 2000 than piping in through std in seems to cause issues for the upstream app
+		// hence setting buffer size to too
+		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
+		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
+		myDecoder.Size = myDecoder.WavDecoder.Size
+	case "RAW":
+		myDecoder.WavDecoder = &foxWavReader.WavReader{}
+		myDecoder.WavDecoder.Input = myFile
+		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
+		//Do not Init the header instead we will have received the necessary header information as arguments
+
+		myDecoder.WavDecoder.BitDepth = int(myDecoder.BitDepth)
+		myDecoder.WavDecoder.SampleRate = int(myDecoder.SampleRate)
+		myDecoder.WavDecoder.NumChannels = int(myDecoder.NumChannels)
+		if myDecoder.BigEndian {
+			myDecoder.WavDecoder.ByteOrder = binary.BigEndian
+			myDecoder.WavDecoder.LittleEndian = false
+		} else {
+			myDecoder.WavDecoder.ByteOrder = binary.LittleEndian
+			myDecoder.WavDecoder.LittleEndian = true
+		}
 		// If the input buffer is bigger then 2000 than piping in through std in seems to cause issues for the upstream app
 		// hence setting buffer size to too
 		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
@@ -132,32 +154,76 @@ func (myDecoder *AudioDecoder) Close() {
 
 // Some functions for identifying the most common audio formats from the header in the bytestream under 1000 bytes needed.
 func identifyFormat(data []byte) string {
-	patterns := map[string][]byte{
-		"WAV":  {0x52, 0x49, 0x46, 0x46},
-		"MP3":  {0x49, 0x44, 0x33},             // Check for "ID3"
-		"FLAC": {0x66, 0x4C, 0x61, 0x43},       // Check for "fLaC"
-		"AIFF": {0x6D, 0x73, 0x62, 0x66},       // Check for "msbf"
-		"Ogg":  {0x4F, 0x67, 0x67, 0x53},       // Check for "OggS"
-		"WMA":  {0x57, 0x4D, 0x41, 0x00},       // Check for "WMA\x00\x00\x00"
-		"M4A":  {0x66, 0x74, 0x79, 0x70},       // Check for "ftyp"
-		"APE":  {0x41, 0x50, 0x45, 0x76, 0x32}, // Check for "APEv2"
+	// Define format checks with offset and magic bytes
+	type formatCheck struct {
+		offset  int
+		pattern []byte
+		format  string
 	}
 
-	for format, pattern := range patterns {
-		if len(data) >= len(pattern) && compareBytes(data[:len(pattern)], pattern) {
-			return format
+	checks := []formatCheck{
+		// WAV/RIFF
+		{0, []byte{0x52, 0x49, 0x46, 0x46}, "WAV"},
+		// MP3 with ID3 tag
+		{0, []byte{0x49, 0x44, 0x33}, "MP3"},
+		// FLAC
+		{0, []byte{0x66, 0x4C, 0x61, 0x43}, "FLAC"},
+		// AIFF ("FORM" at 0, then "AIFF" at 8)
+		{0, []byte{0x46, 0x4F, 0x52, 0x4D}, "AIFF"},
+		// Ogg
+		{0, []byte{0x4F, 0x67, 0x67, 0x53}, "Ogg"},
+		// WMA/ASF GUID (first 16 bytes)
+		{0, []byte{0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C}, "WMA"},
+		// M4A (MP4) - "ftyp" at offset 4
+		{4, []byte{0x66, 0x74, 0x79, 0x70}, "ftyp"},
+		// APE - "MAC " at start
+		{0, []byte{0x4D, 0x41, 0x43, 0x20}, "APE"},
+		// MIDI - "MThd" at 0
+		{0, []byte{0x4D, 0x54, 0x68, 0x64}, "MIDI"},
+		// AMR - "#!AMR"
+		{0, []byte{0x23, 0x21, 0x41, 0x4D, 0x52}, "AMR"},
+		// AU - ".snd"
+		{0, []byte{0x2E, 0x73, 0x6E, 0x64}, "AU"},
+	}
+
+	var format string
+
+	for _, check := range checks {
+		end := check.offset + len(check.pattern)
+		if end > len(data) {
+			continue
 		}
+		if compareBytes(data[check.offset:end], check.pattern) {
+			return check.format // Corrected: return the found format immediately
+		}
+	}
+
+	if format == "ftyp" {
+		if len(data) >= 12 {
+			brand := data[8:12]
+			if compareBytes(brand, []byte{0x6D, 0x70, 0x34, 0x32}) || compareBytes(brand, []byte{0x6D, 0x34, 0x61, 0x20}) {
+				return "M4A"
+			} else {
+				return "MP4"
+			}
+		}
+	}
+
+	// Fallback for MP3 without ID3 tag (check frame sync)
+	if len(data) >= 2 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+		return "MP3"
 	}
 
 	return "Unknown"
 }
 
+// Example compareBytes function (assumed to be correctly implemented)
 func compareBytes(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if a[i] != b[i] {
+	for i, v := range a {
+		if v != b[i] {
 			return false
 		}
 	}

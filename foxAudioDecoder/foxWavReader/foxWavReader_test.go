@@ -23,7 +23,7 @@ func TestAudioDecoderSoXLoader(t *testing.T) {
 	fmt.Println("Test: Running TestAudioDecoderSoXLoader...", filename)
 
 	// Create an *exec.Cmd
-	cmd := exec.Command("sox", filename, "-r", "96000", "-t", "wav", "-")
+	cmd := exec.Command("E:\\Local Audio\\SOX\\sox.exe", filename, "-r", "96000", "-t", "wav", "-")
 
 	// Create a bytes.Buffer to capture the output
 	var out bytes.Buffer

@@ -31,7 +31,7 @@ type AudioDecoder struct {
 	BitDepth    int
 	NumChannels int
 	BigEndian   bool
-	Size        uint32 // Size of the audio data
+	Size        int64 // Size of the audio data
 	Type        string
 	Filename    string // Added for file reading
 	WavDecoder  *foxWavReader.WavReader
@@ -79,8 +79,8 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		// hence setting buffer size to too
 		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
 		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
-		myDecoder.Size = myDecoder.WavDecoder.Size
-	case "RAW":
+		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
+	case "PCM":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
 		myDecoder.WavDecoder.Input = myFile
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
@@ -100,7 +100,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		// hence setting buffer size to too
 		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
 		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
-		myDecoder.Size = myDecoder.WavDecoder.Size
+		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
 
 	default:
 		errorText := "unsupported encoder type "

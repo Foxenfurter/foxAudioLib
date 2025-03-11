@@ -45,9 +45,23 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	const functionName = "Initialise"
 	// We need to be able to read the header in the filestream before we do any processing
 	// we are going to peak this and 1000 bytes should cover almost all formats.
+	myDecoder.debug("Initialising...")
 	var myFile *os.File
 	if myDecoder.Filename == "" {
-		myFile = os.Stdin
+		stat, err := os.Stdin.Stat()
+		if err != nil {
+			return err // Handle the error
+		}
+
+		if (stat.Mode() & os.ModeCharDevice) == 0 {
+			myDecoder.debug("Data is being piped to stdin")
+			// Proceed with reading from stdin (using your combinedReader logic)
+			// ...
+			myFile = os.Stdin
+		} else {
+			return errors.New("no file specified and stdin is not a pipe")
+		}
+
 	} else {
 		var err error
 		// clean and standardize the filename

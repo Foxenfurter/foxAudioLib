@@ -8,6 +8,7 @@ package foxPEQ
 import (
 	"fmt"
 	"math"
+	"strings"
 )
 
 const packageName = "foxPEQ"
@@ -140,16 +141,17 @@ func (PEQ *PEQFilter) CalcBiquadFilter(filterType string, frequency, peakGain, w
 	const errorPrefix = packageName + ":" + "CalcBiquadFilter "
 	// Nyquist frequency approximation
 	Nyquist := 0.445
-
+	filterType = strings.ToLower(filterType)
+	//slopeType = strings.ToLower(slopeType)
 	if frequency < 10 || frequency > 25000 {
 
-		return fmt.Errorf(errorPrefix+"frequency should be between 10 and 25000, got: %v", frequency)
+		return fmt.Errorf(errorPrefix+" %s frequency should be between 10 and 25000, got: %v ", filterType, frequency)
 	}
 	if PEQ.SampleRate < 10000 || PEQ.SampleRate > 400000 {
-		return fmt.Errorf(errorPrefix+"sampleRate should be a recognized sample rate, got: %d", PEQ.SampleRate)
+		return fmt.Errorf(errorPrefix+" %s sampleRate should be a recognized sample rate, got: %d ", filterType, PEQ.SampleRate)
 	}
 	if peakGain < -30 || peakGain > 20 {
-		return fmt.Errorf(errorPrefix+"peakGain should be between -30 and +20, got: %f", peakGain)
+		return fmt.Errorf(errorPrefix+" %s peakGain should be between -30 and +20, got: %f ", filterType, peakGain)
 	}
 
 	// Adjust frequency if it exceeds Nyquist frequency
@@ -197,7 +199,7 @@ func (PEQ *PEQFilter) CalcBiquadFilter(filterType string, frequency, peakGain, w
 	case "octave":
 		alpha = sino * math.Sinh(math.Log(2)/2*width*omega/sino)
 	default:
-		return fmt.Errorf("slopeType %s was not recognized [slope, Q, octave]", slopeType)
+		return fmt.Errorf(errorPrefix+" slopeType %s was not recognized [slope, Q, octave]", slopeType)
 	}
 
 	switch filterType {
@@ -279,7 +281,7 @@ func (PEQ *PEQFilter) CalcBiquadFilter(filterType string, frequency, peakGain, w
 		a2 = norm * ((ampl + 1) - (ampl-1)*coso - 2*SQRTA*alpha)
 
 	default:
-		return fmt.Errorf(errorPrefix+"filterType %s was not set to a recognized filter type", filterType)
+		return fmt.Errorf(errorPrefix+" filterType %s was not set to a recognized filter type ", filterType)
 	}
 
 	myCoefficients := Coefficients{

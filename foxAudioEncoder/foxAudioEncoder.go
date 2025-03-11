@@ -54,8 +54,8 @@ func (myEncoder *AudioEncoder) Initialise() error {
 				return fmt.Errorf(packageName+":"+functionName+":error removing existing file: %w", err)
 			}
 		}
-	}
 
+	}
 	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  decide which encoder to use..."))
 
 	// Decide which encoder to use

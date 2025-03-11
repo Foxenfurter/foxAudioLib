@@ -6,6 +6,7 @@ package foxResampler
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"math"
 	"os/exec"
@@ -58,6 +59,7 @@ func (myResampler *Resampler) warning(message string) {
 
 // In case you want to use sox as an input.
 func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader, error) {
+	functionName := "ReadnResampleFirFile"
 	mySampleRate := strconv.Itoa(targetSampleRate)
 	cmd := exec.Command("sox", filePath, "-r", mySampleRate, "-t", "wav", "-q", "-")
 	// Create a bytes.Buffer to capture the output
@@ -67,8 +69,8 @@ func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader,
 	// Run the command
 	err := cmd.Run()
 	if err != nil {
-		println("Error running sox command, err: ", err)
-		return nil, err
+		ErrorText := packageName + ":" + functionName + " Error running sox command: " + err.Error()
+		return nil, errors.New(ErrorText)
 	}
 
 	// The output is now in the 'out' buffer.

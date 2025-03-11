@@ -75,6 +75,7 @@ func (l *Logger) Error(description string) {
 // FatalError logs a fatal error message with the specified description.
 func (l *Logger) FatalError(description string) {
 	l.Log(FatalError, description)
+	l.Close() // Ensure log file is closed and flushed
 	os.Exit(1)
 }
 
@@ -92,6 +93,10 @@ func (l *Logger) Log(logType, description string) {
 
 	if _, err := l.LogFile.WriteString(logEntry); err != nil {
 		log.Printf("Error writing to log file: %v", err)
+	} else {
+		if err := l.LogFile.Sync(); err != nil {
+			log.Printf("Error syncing log file: %v", err)
+		}
 	}
 }
 

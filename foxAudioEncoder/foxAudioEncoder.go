@@ -99,7 +99,7 @@ func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 // the optional throttleInputChannel will send a delay based upont the encoder processing time to be used by the feeding function in order to slow down any processing
 func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]float64, throttleInputChannel chan<- time.Duration) error {
 	const functionName = "EncodeSamplesChannel"
-
+	totalSamples := 0
 	for samples := range samplesChannel {
 
 		start := time.Now()
@@ -108,15 +108,15 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 		if err != nil {
 			return errors.New(packageName + ":" + functionName + ": " + err.Error())
 		}
-
+		totalSamples += len(samples[0])
 		elapsedTime := time.Since(start)
 		//
 		if throttleInputChannel != nil {
 			throttleInputChannel <- elapsedTime
 		}
-
 	}
 
+	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Total samples encoded: %v", totalSamples))
 	return nil
 }
 

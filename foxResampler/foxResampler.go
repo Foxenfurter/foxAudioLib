@@ -23,6 +23,7 @@ type Resampler struct {
 	ToSampleRate   int
 	Quality        int
 	//streaming         bool
+	DebugOn     bool //enables debugging
 	DebugFunc   func(string)
 	WarningFunc func(string)
 }
@@ -41,14 +42,15 @@ func NewResampler() *Resampler {
 }
 
 // Function to handle debug calls, allowing for different logging implementations
+
 func (myResampler *Resampler) debug(message string) {
-
-	if myResampler.DebugFunc != nil {
-		myResampler.DebugFunc(message)
-	} else { // if no external debug function available just print the message
-		println(message)
+	if myResampler.DebugOn {
+		if myResampler.DebugFunc != nil {
+			myResampler.DebugFunc(message)
+		} else { // if no external debug function available just print the message
+			println(message)
+		}
 	}
-
 }
 
 func (myResampler *Resampler) warning(message string) {
@@ -444,5 +446,3 @@ func rangeLimit(value, min, max int) int {
 	}
 	return value
 }
-
-// Filter is all above

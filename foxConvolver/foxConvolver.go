@@ -7,6 +7,7 @@ package foxConvolver
 import (
 	"math"
 	"math/cmplx"
+	"strconv"
 
 	gofft "github.com/argusdusty/gofft"
 	"scientificgo.org/fft"
@@ -25,9 +26,28 @@ type Convolver struct {
 	impulseFFT        []complex128
 	overlapTail       []float64 // Overlap tail
 	Buffer            []float64 // Buffer to manage difference between streamed signal size and target size for convolution
-	//streaming         bool
+
+	DebugOn     bool //enables debugging
 	DebugFunc   func(string)
 	WarningFunc func(string)
+}
+
+// Function to handle debug calls, allowing for different logging implementations
+
+func (myConvolver *Convolver) debug(message string) {
+	if myConvolver.DebugOn {
+		if myConvolver.DebugFunc != nil {
+			myConvolver.DebugFunc(message)
+		} else { // if no external debug function available just print the message
+			println(message)
+		}
+	}
+}
+
+func (myConvolver *Convolver) warning(message string) {
+	if myConvolver.WarningFunc != nil {
+		myConvolver.WarningFunc(message)
+	}
 }
 
 func (myConvolver *Convolver) GetPaddedLength() int {
@@ -152,7 +172,7 @@ func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float
 
 	myConvolver.overlapTail = overlappedSignal[start:end]
 	if len(overlappedSignal) != len(myConvolver.impulseFFT) {
-		println("signal length: ", len(overlappedSignal), " Impulse: ", len(myConvolver.impulseFFT))
+		myConvolver.debug("signal length: " + strconv.Itoa(len(overlappedSignal)) + " Impulse: " + strconv.Itoa(len(myConvolver.impulseFFT)))
 		return signalBlock
 	}
 	//now do the convolution
@@ -238,7 +258,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 	totalProcessed := 0
 	targetSignalLength := myConvolver.GetPaddedLength() - len(myConvolver.FilterImpulse)
 
-	println("targetSignalLength", targetSignalLength)
+	myConvolver.debug("targetSignalLength: " + strconv.Itoa(targetSignalLength))
 	for inputBlock := range inputSignalChannel {
 		totalProcessed += len(inputBlock)
 		if len(myConvolver.FilterImpulse) == 0 {
@@ -271,8 +291,8 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 		myConvolver.Buffer = make([]float64, 0)
 	}
 
-	println("Remaining Data in Buffer: ", len(myConvolver.Buffer), " Samples convolved: ", totalProcessed)
-	println("Convolver Closing Channel: ")
+	myConvolver.debug("Remaining Data in Buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " Samples convolved: " + strconv.Itoa(totalProcessed))
+	myConvolver.debug("Convolver Closing Channel: ")
 	close(outputSignalChannel)
 
 }
@@ -344,23 +364,6 @@ func (myConvolver *Convolver) ConvolveFFT(signal []float64) []float64 {
 	//now truncate output back to original signal length
 	return output[:signalLength]
 
-}
-
-// Function to handle debug calls, allowing for different logging implementations
-func (myConvolver *Convolver) debug(message string) {
-
-	if myConvolver.DebugFunc != nil {
-		myConvolver.DebugFunc(message)
-	} else { // if no external debug function available just print the message
-		println(message)
-	}
-
-}
-
-func (myConvolver *Convolver) warning(message string) {
-	if myConvolver.WarningFunc != nil {
-		myConvolver.WarningFunc(message)
-	}
 }
 
 // simple Cooley-Tukey based FFT for baseline benchmark

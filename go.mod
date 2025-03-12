@@ -2,10 +2,10 @@ module github.com/Foxenfurter/foxAudioLib
 
 go 1.21.6
 
-require github.com/zeozeozeo/gomplerate v0.0.0-20221111211105-a97684dfe86a
 
 require (
-	github.com/argusdusty/gofft v1.2.1
-	github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12 // indirect
-	scientificgo.org/fft v0.0.0 // indirect
+    github.com/argusdusty/gofft v1.2.1
+    github.com/google/uuid v1.6.0
+    github.com/mjibson/go-dsp v0.0.0-20180508042940-11479a337f12
+    scientificgo.org/fft v0.0.0
 )

@@ -234,7 +234,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	functionName := "DecodeInput"
 	start := time.Now()
 	TotalBytes := 0
-
+	TotalSamples := 0                                                            //1 channel
 	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
 
 	// Smaller buffer for accumulating data
@@ -259,7 +259,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 				return errors.New(ErrorText)
 			}
 			// EOF reached
-			FD.debug(fmt.Sprintf(packageName + ":" + functionName + "EOF reached"))
+			FD.debug(fmt.Sprintf(packageName + ":" + functionName + " EOF reached"))
 			EOF = true
 
 		}
@@ -282,6 +282,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 				return errors.New(ErrorText)
 
 			}
+			TotalSamples += len(mySamples[0])
 			DecodedSamplesChannel <- mySamples
 
 			TotalBytes += filledBytes
@@ -309,6 +310,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 					return errors.New(ErrorText)
 
 				}
+				TotalSamples += len(mySamples[0])
 				DecodedSamplesChannel <- mySamples
 
 				TotalBytes += filledBytes
@@ -322,7 +324,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	close(DecodedSamplesChannel)
 
 	elapsedTime := time.Since(start).Milliseconds()
-	FD.debug(fmt.Sprintf("Total bytes read: %v Elapsed time (ms): %v \n", TotalBytes, elapsedTime))
+	FD.debug(fmt.Sprintf(packageName+":"+functionName+" Total bytes read: %v Total samples read: %v Elapsed time (ms): %v \n", TotalBytes, TotalSamples, elapsedTime))
 	return nil
 }
 

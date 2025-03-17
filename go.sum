@@ -1,7 +1,3 @@
-github.com/Foxenfurter/foxAudioLib/foxAudioDecoder v0.0.0-20250311143829-31770e39fffb h1:1rXCnRDYnBbk8u56TMCRCSmhqjA2+FDh+KOIr4168h8=
-github.com/Foxenfurter/foxAudioLib/foxAudioDecoder v0.0.0-20250311143829-31770e39fffb/go.mod h1:5d7qEm9eFIC9lhmiU2xdMgsbDz2YbqUNF3Ogjy5vaGQ=
-github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader v0.0.0-20250311143829-31770e39fffb h1:ArLnHI+QrwOxQAqTTfEfyw4uNd97cpWQ829b0yd+TSY=
-github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader v0.0.0-20250311143829-31770e39fffb/go.mod h1:9Gq+l/lNwh8NruyFLMx84fGaTidM538xFIiidepoSZE=
 github.com/argusdusty/gofft v1.2.1 h1:Ir33IyKzMPvgK70PPWtmHpzjbTsUkL51EunWn4mrksA=
 github.com/argusdusty/gofft v1.2.1/go.mod h1:OABUQ4XoJ49ucI4ZPv0i6a0x3KKM4yDSK5rsMwFL43Q=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

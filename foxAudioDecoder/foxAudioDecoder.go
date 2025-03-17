@@ -6,6 +6,7 @@
 package foxAudioDecoder
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -77,7 +78,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = myFile
+		myDecoder.WavDecoder.Input = bufio.NewReader(myFile)
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Init the header
 		err := myDecoder.WavDecoder.DecodeWavHeader()
@@ -96,7 +97,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
 	case "PCM":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = myFile
+		myDecoder.WavDecoder.Input = bufio.NewReader(myFile)
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Do not Init the header instead we will have received the necessary header information as arguments
 

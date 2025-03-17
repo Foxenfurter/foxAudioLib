@@ -28,7 +28,7 @@ type WavReader struct {
 	ByteOrder      binary.ByteOrder
 	wordLength     int
 	bytesPerSample int
-	Input          io.Reader // Changed from *os.File to io.Reader
+	Input          io.Reader // Changed from *os.File to io.Reader to *bufio.Reader back to io.Reader
 	AudioFormat    WaveFormat
 	DebugFunc      func(string)
 }
@@ -236,10 +236,10 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	TotalBytes := 0
 	TotalSamples := 0                                                            //1 channel
 	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
-
+	processingBufferSize = processingBufferSize / 6
 	// Smaller buffer for accumulating data
 	// No need to Flush the processing buffer as we are re-using and controlling the read cursor
-	readBufferSize := 1000                     // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
+	readBufferSize := 4096                     // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
 	if readBufferSize > processingBufferSize { //We don't want the read buffer to be bigger than the processing buffer
 		readBufferSize = processingBufferSize
 	}

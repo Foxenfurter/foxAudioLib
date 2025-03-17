@@ -254,15 +254,21 @@ func (myConvolver *Convolver) initNormal(ImpulseLength int, SignalBlockLength in
 // Processing size is optimised for FFT performance hence is derived from the impulse length
 // Must use overlap and save mechanism for convolving to avoid dropouts and other glitches.
 func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalChannel chan []float64) {
+	functionName := "ConvolveChannel"
 	myConvolver.InitForStreaming()
 	totalProcessed := 0
 	targetSignalLength := myConvolver.GetPaddedLength() - len(myConvolver.FilterImpulse)
+	NoConvolverMessage := false
 
-	myConvolver.debug("targetSignalLength: " + strconv.Itoa(targetSignalLength))
+	myConvolver.debug(packageName + ": " + functionName + ": targetSignalLength: " + strconv.Itoa(targetSignalLength))
 	for inputBlock := range inputSignalChannel {
-		totalProcessed += len(inputBlock)
+
 		if len(myConvolver.FilterImpulse) == 0 {
-			// Nothing to convolve with so just hand on the input
+			// Nothing to convolve with so just hand on the input - only log once
+			if !NoConvolverMessage {
+				myConvolver.debug(packageName + ": " + functionName + ": Nothing to convolve with")
+				NoConvolverMessage = true
+			}
 			outputSignalChannel <- inputBlock
 
 		} else {
@@ -272,10 +278,13 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 			for {
 				if len(myConvolver.Buffer) >= targetSignalLength {
 					// handling OLS properly ~ 0.6s
-
 					outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer[:targetSignalLength])
 					// reposition the buffer
-
+					totalProcessed += targetSignalLength
+					if !NoConvolverMessage {
+						myConvolver.debug(packageName + ": " + functionName + ": Channel Convolving")
+						NoConvolverMessage = true
+					}
 					myConvolver.Buffer = myConvolver.Buffer[targetSignalLength:]
 
 				} else {
@@ -287,12 +296,15 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 	}
 	if len(myConvolver.Buffer) > 0 {
 		// flush the remaining data in the buffer
+		totalProcessed += len(myConvolver.Buffer)
+		myConvolver.debug(packageName + ": " + functionName + ": Flushing remaining data in buffer: " + strconv.Itoa(len(myConvolver.Buffer)))
 		outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer)
+		myConvolver.debug(packageName + ": " + functionName + ": Flush complete")
 		myConvolver.Buffer = make([]float64, 0)
 	}
 
-	myConvolver.debug("Remaining Data in Buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " Samples convolved: " + strconv.Itoa(totalProcessed))
-	myConvolver.debug("Convolver Closing Channel: ")
+	myConvolver.debug(packageName + ": " + functionName + ": Closing Channel - Remaining Data in Buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " Samples convolved: " + strconv.Itoa(totalProcessed) + " Tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
+
 	close(outputSignalChannel)
 
 }
@@ -338,7 +350,7 @@ func ConvolveSlow(impulse1 []float64, impulse2 []float64) []float64 {
 
 // use convolver structure with precomputed Impulse values and then convolve signal
 func (myConvolver *Convolver) ConvolveFFT(signal []float64) []float64 {
-	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+	if len(myConvolver.FilterImpulse) == 0 {
 		return signal
 	}
 	signalLength := len(signal)

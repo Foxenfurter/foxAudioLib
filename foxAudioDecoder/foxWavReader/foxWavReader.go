@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -140,7 +141,7 @@ var sampleFLOAT64 float64
 // Byte Converter
 func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) {
 	//functionName:="ConvertBytesToFloat64"
-	//Calculate the expected number of samples from the input buffer NB we are talking fram samples here
+	//Calculate the expected number of samples from the input buffer NB we are talking frame samples here
 	//copy channels as a minor optimization
 	numChannels := FD.NumChannels
 	numSamples := uint32(len(myBytes) / ((FD.BitDepth / 8) * (numChannels)))
@@ -416,6 +417,67 @@ func mapUint16ToWaveFormat(value uint16) WaveFormat {
 	}
 }
 
+// Reusable buffer pool for fixed-size reads (4 bytes for 32-bit values, 2 for 16-bit)
+var bufferPool4 = sync.Pool{
+	New: func() interface{} { return make([]byte, 4) },
+}
+
+var bufferPool2 = sync.Pool{
+	New: func() interface{} { return make([]byte, 2) },
+}
+
+func (w *WaveFile) readBytesFromInput(myReader io.Reader, count int) ([]byte, error) {
+	buffer := make([]byte, count)
+	if _, err := io.ReadFull(myReader, buffer); err != nil {
+		return nil, err
+	}
+	w.pos += int64(count)
+	return buffer, nil
+}
+
+func (w *WaveFile) readCharsFromInput(myReader io.Reader, count int) (string, error) {
+	buffer := make([]byte, count)
+	if _, err := io.ReadFull(myReader, buffer); err != nil {
+		return "", err
+	}
+	w.pos += int64(count)
+	return string(buffer), nil
+}
+
+func (w *WaveFile) readInt32FromInput(myReader io.Reader) (int32, error) {
+	buf := bufferPool4.Get().([]byte)
+	defer bufferPool4.Put(buf)
+
+	if _, err := io.ReadFull(myReader, buf); err != nil {
+		return 0, err
+	}
+	w.pos += 4
+	return int32(binary.LittleEndian.Uint32(buf)), nil
+}
+
+func (w *WaveFile) readUInt32FromInput(myReader io.Reader) (uint32, error) {
+	buf := bufferPool4.Get().([]byte)
+	defer bufferPool4.Put(buf)
+
+	if _, err := io.ReadFull(myReader, buf); err != nil {
+		return 0, err
+	}
+	w.pos += 4
+	return binary.LittleEndian.Uint32(buf), nil
+}
+
+func (w *WaveFile) readUInt16FromInput(myReader io.Reader) (uint16, error) {
+	buf := bufferPool2.Get().([]byte)
+	defer bufferPool2.Put(buf)
+
+	if _, err := io.ReadFull(myReader, buf); err != nil {
+		return 0, err
+	}
+	w.pos += 2
+	return binary.LittleEndian.Uint16(buf), nil
+}
+
+/* Commented out in order to test possibly improved versions
 func (w *WaveFile) readBytesFromInput(myReader io.Reader, count int) ([]byte, error) {
 	functionName := "readBytesFromInput"
 	buffer := make([]byte, count)
@@ -516,48 +578,61 @@ func (w *WaveFile) readUInt16FromInput(myReader io.Reader) (uint16, error) {
 
 	return value, nil
 }
-
+*/
 // Read Wav File Header
 func (fd *WavReader) DecodeWavHeader() error {
 	functionName := "DecodeWavHeader"
 	var w WaveFile
+	var err error
 	w.ok = false
 	w.pos = 0
 	w.dataOffset = 0
-	hdr, err := w.readCharsFromInput(fd.Input, 4)
-	if err != nil {
+	// Read the first 12 bytes (RIFF header + size + WAVE)
+	header := make([]byte, 12)
+	if _, err := io.ReadFull(fd.Input, header); err != nil {
 		return err
 	}
+	w.riff = string(header[:4])
+	fileLen := binary.LittleEndian.Uint32(header[4:8])
+	w.wave = string(header[8:12])
+	w.pos = 12
+	/*
+		hdr, err := w.readCharsFromInput(fd.Input, 4)
+		if err != nil {
+			return err
+		}
 
-	w.riff = hdr
-
+		w.riff = hdr
+	*/
 	if w.riff != "RIFF" && w.riff != "FORM" {
-		if len(hdr) == 0 {
+		if len(w.riff) == 0 {
 			return errors.New(packageName + functionName + ": file could not be read: no data")
 		}
 		x := ""
-		for j := 0; j < len(hdr); j++ {
-			x += fmt.Sprintf("%X ", hdr[j])
+		for j := 0; j < len(w.riff); j++ {
+			x += fmt.Sprintf("%X ", w.riff[j])
 		}
 		return fmt.Errorf(packageName+functionName+": file is not WAV: no 'RIFF' tag found, instead '%s' ", x)
 	}
 
 	// File length
-	fileLen, err := w.readInt32FromInput(fd.Input)
+	/*fileLen, err := w.readInt32FromInput(fd.Input)
 
 	if err != nil {
 		return err
-	}
+	}*/
 	w.length = uint32(fileLen)
 
 	// Read Wave
+	/*
+		wave, err := w.readCharsFromInput(fd.Input, 4)
+		if err != nil {
+			return err
+		}
 
-	wave, err := w.readCharsFromInput(fd.Input, 4)
-	if err != nil {
-		return err
-	}
-
-	w.wave = wave
+		w.wave = wave
+	*/
+	// end of optimise
 
 	if w.wave != "WAVE" && w.wave != "AIFF" {
 		return fmt.Errorf(packageName+functionName+": file is not WAV: no 'WAVE' tag found, instead %s", w.wave)
@@ -591,7 +666,11 @@ func (fd *WavReader) DecodeWavHeader() error {
 			return errors.New(packageName + functionName + ": file could not be read: invalid 'fmt' chunk size")
 		}
 
-		_, err = w.readBytesFromInput(fd.Input, int(chunkSize))
+		//_, err = w.readBytesFromInput(fd.Input, int(chunkSize))
+		// Skip chunkSize bytes without buffering
+		_, err = io.CopyN(io.Discard, fd.Input, int64(chunkSize))
+		w.pos += int64(chunkSize) // Update position tracking if needed
+
 		if err != nil {
 			return err
 		}
@@ -764,7 +843,11 @@ func (fd *WavReader) DecodeWavHeader() error {
 			miscSize = int32(binary.BigEndian.Uint32(miscSizeBytes))
 		}
 
-		_, err = w.readBytesFromInput(fd.Input, int(miscSize))
+		// Skip chunkSize bytes without buffering
+		_, err = io.CopyN(io.Discard, fd.Input, int64(miscSize))
+		w.pos += int64(miscSize) // Update position tracking if needed
+		//_, err = w.readBytesFromInput(fd.Input, int(miscSize))
+
 		if err != nil {
 			return err
 		}

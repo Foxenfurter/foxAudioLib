@@ -59,6 +59,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 			// Proceed with reading from stdin (using your combinedReader logic)
 			// ...
 			myFile = os.Stdin
+
 		} else {
 			return errors.New("no file specified and stdin is not a pipe")
 		}
@@ -78,7 +79,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = bufio.NewReader(myFile)
+		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 4096)
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Init the header
 		err := myDecoder.WavDecoder.DecodeWavHeader()
@@ -97,7 +98,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
 	case "PCM":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = bufio.NewReader(myFile)
+		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 4096)
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Do not Init the header instead we will have received the necessary header information as arguments
 

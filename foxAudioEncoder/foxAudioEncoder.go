@@ -4,6 +4,7 @@
 package foxAudioEncoder
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -23,7 +24,9 @@ type AudioEncoder struct {
 	NumChannels int
 	Size        int64
 	Type        string
-	Filename    string // Added filename field
+	Filename    string        // Added filename field
+	file        *os.File      // Holds the open file handle
+	writer      *bufio.Writer // Buffered writer for efficient writes
 
 	DebugFunc func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 	DebugOn   bool         //enables debugging
@@ -46,7 +49,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 
 	const functionName = "Initialise"
 
-	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating Header..."))
+	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating Header..."))
 	var err error
 	// Remove existing file if it exists and a filename is provided
 	if myEncoder.Filename != "" { // Only check for existing file if filename is not blank
@@ -61,7 +64,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 		}
 
 	}
-	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  decide which encoder to use..."))
+	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  decide which encoder to use..."))
 
 	// Decide which encoder to use
 	switch strings.ToUpper(myEncoder.Type) {
@@ -73,7 +76,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 			NumChannels: myEncoder.NumChannels,
 			Size:        myEncoder.Size,
 		}
-		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  use wav now write Header.."))
+		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating wav header..."))
 		err = myEncoder.writeHeader() // Write header during initialization
 		if err != nil {
 			return fmt.Errorf(packageName+":"+functionName+":error writing wav header: %w", err)
@@ -81,8 +84,8 @@ func (myEncoder *AudioEncoder) Initialise() error {
 	default:
 		return errors.New(packageName + ":" + functionName + ":unsupported encoder type")
 	}
-	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Finished Header..."))
-	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] ",
+	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Finished Header..."))
+	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Header SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] ",
 		myEncoder.SampleRate, myEncoder.NumChannels, myEncoder.BitDepth, myEncoder.Size))
 	return err
 }
@@ -152,14 +155,12 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 				batch[i] = buffer[i][:targetSamples]
 				buffer[i] = buffer[i][targetSamples:]
 			}
-
 			// Encode the batch
 			//myEncoder.debug(packageName + ":" + functionName + " Encoding batch ")
-
 			if err := myEncoder.EncodeData(batch); err != nil {
 				return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
 			}
-
+			totalSamples += len(batch[0])
 		}
 		// Throttle logic
 		elapsed := time.Since(start)
@@ -173,6 +174,7 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 		if err := myEncoder.EncodeData(buffer); err != nil {
 			return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
 		}
+		totalSamples += len(buffer[0])
 	}
 
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Total samples encoded: %v", totalSamples))
@@ -318,13 +320,14 @@ func (myEncoder *AudioEncoder) AccumulateAndEncode(samples [][]float64, n int) e
 // Helper functions for file writing
 func (myEncoder *AudioEncoder) writeHeader() error {
 	const functionName = "writeHeader"
-	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  call low level Header.."))
+	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + " generate and write Header.."))
 	headerBytes, err := myEncoder.encoder.EncodeHeader()
 	if err != nil {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
-	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  writing header.."))
-	err = writeOutput(headerBytes, myEncoder.Filename)
+	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  writing header.."))
+	//err = writeOutput(headerBytes, myEncoder.Filename)
+	err = myEncoder.writeData(headerBytes)
 	if err != nil {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
@@ -332,6 +335,61 @@ func (myEncoder *AudioEncoder) writeHeader() error {
 }
 
 func (e *AudioEncoder) writeData(data []byte) error {
+	const functionName = "writeData"
+	if e.Filename == "" {
+		// Write directly to stdout without buffering
+		_, err := os.Stdout.Write(data)
+		if err != nil {
+			return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
+		}
+		return nil
+	}
+
+	// Initialize file and writer on first use
+	if e.file == nil {
+		file, err := os.OpenFile(e.Filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+		if err != nil {
+			return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
+		}
+		e.file = file
+		e.writer = bufio.NewWriter(file)
+
+	}
+
+	// Write data through the buffer
+	if _, err := e.writer.Write(data); err != nil {
+		return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
+	}
+	e.writer.Flush()
+	return nil
+}
+
+func (e *AudioEncoder) Close() error {
+	const functionName = "Close"
+	var err error
+
+	// Flush buffered data before closing
+	if e.writer != nil {
+		if flushErr := e.writer.Flush(); flushErr != nil {
+			err = fmt.Errorf("%s:%s: flush error: %w", packageName, functionName, flushErr)
+		}
+	}
+
+	// Close the file handle if open
+	if e.file != nil {
+		if closeErr := e.file.Close(); closeErr != nil {
+			if err != nil {
+				err = fmt.Errorf("%v; close error: %w", err, closeErr)
+			} else {
+				err = fmt.Errorf("%s:%s: close error: %w", packageName, functionName, closeErr)
+			}
+		}
+	}
+
+	return err
+}
+
+func (e *AudioEncoder) writeDataOld(data []byte) error {
 	return writeOutput(data, e.Filename)
 }
 

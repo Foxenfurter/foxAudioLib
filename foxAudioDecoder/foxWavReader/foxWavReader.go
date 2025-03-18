@@ -324,7 +324,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	close(DecodedSamplesChannel)
 
 	elapsedTime := time.Since(start).Milliseconds()
-	FD.debug(fmt.Sprintf(packageName+":"+functionName+" Total bytes read: %v Total samples read: %v Elapsed time (ms): %v \n", TotalBytes, TotalSamples, elapsedTime))
+	FD.debug(fmt.Sprintf(packageName+":"+functionName+" Total bytes read: %v Total samples read: %v Elapsed time (ms): %v ", TotalBytes, TotalSamples, elapsedTime))
 	return nil
 }
 

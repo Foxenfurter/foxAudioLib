@@ -5,6 +5,7 @@
 package foxWavReader
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -32,6 +33,8 @@ type WavReader struct {
 	Input          io.Reader // Changed from *os.File to io.Reader to *bufio.Reader back to io.Reader
 	AudioFormat    WaveFormat
 	DebugFunc      func(string)
+	// additional for PCM
+	leftoverBytes []byte
 }
 
 // Holds detailed information about the wav Header
@@ -143,6 +146,11 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 	//functionName:="ConvertBytesToFloat64"
 	//Calculate the expected number of samples from the input buffer NB we are talking frame samples here
 	//copy channels as a minor optimization
+	sampleSize := (FD.BitDepth / 8) * FD.NumChannels
+	if len(myBytes)%sampleSize != 0 {
+		return nil, fmt.Errorf("invalid data length: %d (expected multiple of %d)", len(myBytes), sampleSize)
+	}
+
 	numChannels := FD.NumChannels
 	numSamples := uint32(len(myBytes) / ((FD.BitDepth / 8) * (numChannels)))
 
@@ -188,7 +196,12 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 					sampleINT32 = int32(int8(myBytes[index+2]))<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index])
 				} else {
 					// big endian
-					sampleINT32 = int32(myBytes[index])<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index+2])
+					//sampleINT32 = int32(myBytes[index])<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index+2])
+					// Big-endian: [MSB][Mid][LSB]
+					raw := (int32(myBytes[index]) << 24) |
+						(int32(myBytes[index+1]) << 16) |
+						(int32(myBytes[index+2]) << 8)
+					sampleINT32 = raw >> 8 // Sign-extend
 				}
 				samples[c][s] = float64(sampleINT32) * scale24Bit
 			case 26:
@@ -228,6 +241,100 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 		}
 	}
 	return samples, nil
+}
+
+// DecodePCMInput reads raw PCM input and sends decoded samples to the channel
+// Handles partial samples and EOF properly for headerless PCM streams
+// DecodePCMInput reads raw PCM input and sends decoded samples to the channel
+func (FD *WavReader) DecodePCMInput(DecodedSamplesChannel chan [][]float64) error {
+	//	functionName := "DecodePCMInput"
+	//start := time.Now()//
+	defer close(DecodedSamplesChannel)
+
+	sampleSize := (FD.BitDepth / 8) * FD.NumChannels
+	if sampleSize == 0 {
+		return fmt.Errorf("invalid sample size")
+	}
+
+	// 1. Verify stream is seekable and get exact size
+	var totalInputBytes int64
+	if seeker, ok := FD.Input.(io.Seeker); ok {
+		size, err := seeker.Seek(0, io.SeekEnd)
+		if err == nil {
+			_, _ = seeker.Seek(0, io.SeekStart) // Reset position
+			totalInputBytes = size
+			FD.debug(fmt.Sprintf("Input size: %d bytes (%d samples)",
+				size, size/int64(sampleSize)))
+		}
+	}
+
+	// 2. Use buffered reader for reliable partial reads
+	bufReader := bufio.NewReaderSize(FD.Input, 65536)
+	var (
+		leftover     = make([]byte, 0, sampleSize*2)
+		totalSamples int
+	)
+
+	for {
+		// 3. Read through buffer for partial read protection
+		data := leftover
+		for len(data) < sampleSize {
+			chunk, err := bufReader.Peek(bufReader.Size())
+			if len(chunk) > 0 {
+				data = append(data, chunk...)
+				bufReader.Discard(len(chunk))
+			}
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				return fmt.Errorf("read error: %w", err)
+			}
+		}
+
+		// 4. Process complete samples
+		fullSamples := len(data) / sampleSize
+		if fullSamples > 0 {
+			samples, err := FD.ConvertBytesToFloat64(data[:fullSamples*sampleSize])
+			if err != nil {
+				return fmt.Errorf("conversion error: %w", err)
+			}
+
+			select {
+			case DecodedSamplesChannel <- samples:
+				totalSamples += len(samples[0])
+			case <-time.After(1 * time.Second):
+				return fmt.Errorf("channel timeout")
+			}
+		}
+
+		// 5. Save leftovers using circular buffer
+		leftover = data[fullSamples*sampleSize:]
+		if len(leftover) >= sampleSize*2 {
+			copy(leftover, leftover[len(leftover)-sampleSize*2:])
+			leftover = leftover[:sampleSize*2]
+		}
+
+		// 6. Verify EOF condition strictly
+		if _, err := bufReader.Peek(1); err == io.EOF {
+			if len(leftover) > 0 {
+				FD.debug(fmt.Sprintf("Final partial sample: %X", leftover))
+			}
+			break
+		}
+	}
+
+	// 7. Validate input completeness
+	if totalInputBytes > 0 {
+		expected := totalInputBytes / int64(sampleSize)
+		if int64(totalSamples) != expected {
+			return fmt.Errorf("input incomplete: expected %d samples, got %d",
+				expected, totalSamples)
+		}
+	}
+
+	FD.debug(fmt.Sprintf("Completed. Samples: %d", totalSamples))
+	return nil
 }
 
 // Function shoudl resume reading the input stream and pass the resulting samples to the output Channel

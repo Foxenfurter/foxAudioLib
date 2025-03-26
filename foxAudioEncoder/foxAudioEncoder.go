@@ -28,15 +28,18 @@ type AudioEncoder struct {
 	file        *os.File      // Holds the open file handle
 	writer      *bufio.Writer // Buffered writer for efficient writes
 
-	DebugFunc func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
-	DebugOn   bool         //enables debugging
-	encoder   EncoderInterface
+	DebugFunc  func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
+	DebugOn    bool         //enables debugging
+	encoder    EncoderInterface
+	Peak       float64
+	NumSamples int64
 }
 
 // each Encoder must have these methods defined
 type EncoderInterface interface {
 	EncodeHeader() ([]byte, error)
 	EncodeData(samples [][]float64) ([]byte, error)
+	GetPeak() float64
 }
 
 const (
@@ -77,13 +80,26 @@ func (myEncoder *AudioEncoder) Initialise() error {
 			Size:        myEncoder.Size,
 		}
 		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating wav header..."))
+
 		err = myEncoder.writeHeader() // Write header during initialization
 		if err != nil {
 			return fmt.Errorf(packageName+":"+functionName+":error writing wav header: %w", err)
 		}
+	case "PCM":
+		myEncoder.encoder = &foxWavEncoder.FoxEncoder{
+			SampleRate:  myEncoder.SampleRate,
+			BitDepth:    myEncoder.BitDepth,
+			NumChannels: myEncoder.NumChannels,
+			Size:        myEncoder.Size,
+		}
+
+		//Create empty header - no header for PCM
+		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  PCM Output..."))
+
 	default:
 		return errors.New(packageName + ":" + functionName + ":unsupported encoder type")
 	}
+
 	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Finished Header..."))
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Header SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] ",
 		myEncoder.SampleRate, myEncoder.NumChannels, myEncoder.BitDepth, myEncoder.Size))
@@ -99,9 +115,12 @@ func (myEncoder *AudioEncoder) EncodeHeader() error {
 func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 	const functionName = "EncodeData"
 	encodedData, err := myEncoder.encoder.EncodeData(buffer)
+
 	if err != nil {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
+	myEncoder.Peak = myEncoder.encoder.GetPeak()
+	myEncoder.NumSamples += int64(len(buffer[0]))
 	return myEncoder.writeData(encodedData)
 }
 
@@ -142,11 +161,11 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Target Samples: %v", targetSamples))
 	for samples := range samplesChannel {
-
+		start := time.Now()
 		for i := range samples {
 			buffer[i] = append(buffer[i], samples[i]...)
 		}
-		start := time.Now()
+
 		// Encode when buffer reaches target size
 		for len(buffer[0]) >= targetSamples {
 			// Extract batch from buffer
@@ -161,9 +180,26 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 				return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
 			}
 			totalSamples += len(batch[0])
+
 		}
 		// Throttle logic
 		elapsed := time.Since(start)
+
+		if strings.ToUpper(myEncoder.Type) == "PCM" {
+
+			//keep
+			//Expected duration for current batch to be processed
+			expectedDuration := (float64(targetSamples) / float64(myEncoder.SampleRate)) / float64(myEncoder.NumChannels)
+			// Calculate remaining time
+			remainingTime := expectedDuration - elapsed.Seconds()
+
+			// Wait only if remaining time is positive
+			if remainingTime > 0 {
+				myEncoder.debug(fmt.Sprintf("Sleeping for remaining time: %.3f seconds", remainingTime))
+				sleepDuration := time.Duration(remainingTime * float64(time.Second))
+				time.Sleep(sleepDuration)
+			}
+		} //
 		if throttleInputChannel != nil {
 			throttleInputChannel <- elapsed
 		}

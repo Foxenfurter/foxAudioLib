@@ -140,6 +140,10 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 	case "WAV":
 		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 		return err
+	case "PCM":
+		err := myDecoder.WavDecoder.DecodePCMInput(DecodedSamplesChannel)
+		//err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		return err
 	default:
 		errorText := "unsupported encoder type "
 		return errors.New(packageName + ":" + functionName + ":" + errorText)

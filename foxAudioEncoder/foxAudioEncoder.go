@@ -185,21 +185,6 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 		// Throttle logic
 		elapsed := time.Since(start)
 
-		if strings.ToUpper(myEncoder.Type) == "PCM" {
-
-			//keep
-			//Expected duration for current batch to be processed
-			expectedDuration := (float64(targetSamples) / float64(myEncoder.SampleRate)) / float64(myEncoder.NumChannels)
-			// Calculate remaining time
-			remainingTime := expectedDuration - elapsed.Seconds()
-
-			// Wait only if remaining time is positive
-			if remainingTime > 0 {
-				myEncoder.debug(fmt.Sprintf("Sleeping for remaining time: %.3f seconds", remainingTime))
-				sleepDuration := time.Duration(remainingTime * float64(time.Second))
-				time.Sleep(sleepDuration)
-			}
-		} //
 		if throttleInputChannel != nil {
 			throttleInputChannel <- elapsed
 		}

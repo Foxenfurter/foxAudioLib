@@ -79,7 +79,9 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 4096)
+		// reading data from source
+		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 8192)
+		//myDecoder.WavDecoder.Input = myFile
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Init the header
 		err := myDecoder.WavDecoder.DecodeWavHeader()
@@ -98,7 +100,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
 	case "PCM":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 4096)
+		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 8192)
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Do not Init the header instead we will have received the necessary header information as arguments
 
@@ -141,8 +143,8 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 		return err
 	case "PCM":
-		err := myDecoder.WavDecoder.DecodePCMInput(DecodedSamplesChannel)
-		//err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		//err := myDecoder.WavDecoder.DecodePCMInput(DecodedSamplesChannel)
+		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 		return err
 	default:
 		errorText := "unsupported encoder type "

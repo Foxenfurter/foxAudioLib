@@ -99,9 +99,71 @@ func NextPowerOf2(x int) int {
 	return int(math.Pow(2, math.Ceil(math.Log2(float64(x)))))
 }
 
-//Convolver using Overlap and save method. Allows for signal to be sent in blocks e.g. streaming or via channels
-
+// Convolver using Overlap and save method. Allows for signal to be sent in blocks e.g. streaming or via channels
 func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float64 {
+	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+		return signalBlock
+	}
+	//println("Filter Length: ", len(myConvolver.FilterImpulse), " FilterImpulse length: ", myConvolver.impulseLength)
+	// Check to see if any inputs to the calculation have changed and recalulate if necessary
+	if len(myConvolver.FilterImpulse) != myConvolver.impulseLength || len(signalBlock) != myConvolver.signalBlockLength {
+
+		myConvolver.signalBlockLength = len(signalBlock) // L
+		myConvolver.InitForStreaming()
+
+	}
+
+	overlappedSignal := append(myConvolver.overlapTail, (signalBlock)...)
+	// make sure that the signal is the same length as the padded filter.
+	if myConvolver.paddedLength > len(overlappedSignal) {
+		signalPadding := make([]float64, myConvolver.paddedLength-len(overlappedSignal))
+		overlappedSignal = append(overlappedSignal, signalPadding...)
+	}
+	// now create next tail - it needs to be done pre-convolution - ignore any padding
+	start := myConvolver.overlapLength + myConvolver.signalBlockLength - myConvolver.overlapLength
+	end := start + myConvolver.overlapLength
+
+	myConvolver.overlapTail = overlappedSignal[start:end]
+	if len(overlappedSignal) != len(myConvolver.impulseFFT) {
+		myConvolver.debug("signal length: " + strconv.Itoa(len(overlappedSignal)) + " Impulse: " + strconv.Itoa(len(myConvolver.impulseFFT)))
+		return signalBlock
+	}
+	//now do the convolution
+
+	output := myConvolver.convolve(convertFloat64ToComplex128(overlappedSignal))
+	start = myConvolver.overlapLength
+	end = start + myConvolver.signalBlockLength
+
+	//return output[start:end]
+	return output[start:end]
+}
+
+// Initialise Convolver for Streaming convolution - prebuilds the Impulse FFT and sets up the overlap
+// calculates the target size for the signal
+func (myConvolver *Convolver) InitForStreaming() {
+	// Check to see if any inputs to the calculation have changed and recalulate if necessary
+	myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
+	myConvolver.overlapLength = myConvolver.impulseLength      // M-1
+	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
+	// we have pre-computed the signal block length
+	myConvolver.paddedLength = NextPowerOf2(4 * myConvolver.impulseLength)
+	//myConvolver.paddedLength = (myConvolver.signalBlockLength + myConvolver.overlapLength) // L+M-1 = N -- not technically necessary for next power of 2
+	//
+	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
+	// copy impulse into the padded impulse
+	for i := 0; i < myConvolver.impulseLength; i++ {
+		paddedFilterImpulse[i] = complex(myConvolver.FilterImpulse[i], 0)
+	}
+	// Fill remainder of padded impulse array with zeros
+	for i := myConvolver.impulseLength; i < len(paddedFilterImpulse); i++ {
+		paddedFilterImpulse[i] = complex(0, 0)
+	}
+	myConvolver.impulseFFT = fft.Fft(paddedFilterImpulse, false)
+	myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
+
+}
+
+func (myConvolver *Convolver) ConvolveOverlapSaveNew(signalBlock []float64) []float64 {
 	if len(myConvolver.FilterImpulse) == 0 {
 		return signalBlock
 	}
@@ -190,7 +252,7 @@ func (myConvolver *Convolver) convolve(signal []complex128) []float64 {
 
 // Initialise Convolver for Streaming convolution - prebuilds the Impulse FFT and sets up the overlap
 // calculates the target size for the signal
-func (myConvolver *Convolver) InitForStreaming() {
+func (myConvolver *Convolver) InitForStreamingNew() {
 	// Check to see if any inputs to the calculation have changed and recalulate if necessary
 	myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
 	myConvolver.overlapLength = myConvolver.impulseLength      // M-1

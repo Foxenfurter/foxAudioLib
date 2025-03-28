@@ -91,7 +91,7 @@ func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	return headerBuffer.Bytes(), nil
 }
 
-func (we *FoxEncoder) EncodeDataold(buffer [][]float64) ([]byte, error) {
+func (we *FoxEncoder) EncodeDataOriginal(buffer [][]float64) ([]byte, error) {
 	// Calculate the total number of samples across all channels
 	totalSamples := len(buffer[0]) // Assuming all channels have the same number of samples
 	numChannels := we.NumChannels

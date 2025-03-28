@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"sync"
 	"time"
 
@@ -146,6 +147,103 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 	//functionName:="ConvertBytesToFloat64"
 	//Calculate the expected number of samples from the input buffer NB we are talking frame samples here
 	//copy channels as a minor optimization
+	numChannels := FD.NumChannels
+	numSamples := uint32(len(myBytes) / ((FD.BitDepth / 8) * (numChannels)))
+
+	byteReader := bytes.NewReader(myBytes)
+
+	samples := make([][]float64, numChannels)
+	for s := range samples {
+		samples[s] = make([]float64, numSamples)
+	}
+
+	var index int = 0
+
+	//println("Expected number of samples: ", numSamples, len(samples[0]))
+	for s := uint32(0); s < numSamples; s++ {
+		for c := 0; c < numChannels; c++ {
+			switch FD.BitDepth {
+			case 8:
+
+				binary.Read(byteReader, binary.LittleEndian, &samplebyte)
+				// 8-bit PCM uses unsigned bytes
+				samples[c][s] = float64(samplebyte-128) * scale8Bit
+			case 16:
+				// index pos in array is ( (current sample number * channels) + current channel number) * number of bytes in sample
+				index = ((int(s) * numChannels) + c) * 2
+
+				if FD.LittleEndian {
+					sampleINT16 = (int16(myBytes[index+1]) << 8) | int16(myBytes[index])
+				} else {
+					//big endian
+					sampleINT16 = (int16(myBytes[index]) << 8) | int16(myBytes[index+1])
+				}
+
+				samples[c][s] = float64(sampleINT16) * scale16Bit
+
+			case 18:
+
+				binary.Read(byteReader, FD.ByteOrder, &sampleINT16)
+				samples[c][s] = float64(sampleINT16) * scale16Bit
+			case 24:
+				// index pos in array is ( (current sample number * channels) + current channel number) * number of bytes in sample
+				index = ((int(s) * numChannels) + c) * 3
+				if FD.LittleEndian {
+					sampleINT32 = int32(int8(myBytes[index+2]))<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index])
+				} else {
+					// big endian
+					//sampleINT32 = int32(myBytes[index])<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index+2])
+					// Big-endian: [MSB][Mid][LSB]
+					raw := (int32(myBytes[index]) << 24) |
+						(int32(myBytes[index+1]) << 16) |
+						(int32(myBytes[index+2]) << 8)
+					sampleINT32 = raw >> 8 // Sign-extend
+				}
+				samples[c][s] = float64(sampleINT32) * scale24Bit
+			case 26:
+				// kept for reference
+				binary.Read(byteReader, binary.LittleEndian, &sampleUINT16)
+				binary.Read(byteReader, binary.LittleEndian, &sampleINT8)
+
+				// Combine a and b into a 24-bit signed integer
+				sampleINT32 = (int32(sampleINT8) << 16) + int32(sampleUINT16)
+
+				// Calculate the final value
+				samples[c][s] = float64(sampleINT32) * scale24Bit
+
+			case 32:
+				if FD.AudioFormat == PCM {
+					binary.Read(byteReader, binary.LittleEndian, &sampleINT32)
+					samples[c][s] = float64(sampleINT32) * scale32Bit
+				} else {
+
+					// Read 4 bytes and interpret as an IEEE 754 float32
+					binary.Read(byteReader, binary.LittleEndian, &sampleFLOAT32)
+					samples[c][s] = float64(sampleFLOAT32)
+				}
+			case 64:
+
+				if (FD.AudioFormat == IEEE_FLOAT) || (FD.AudioFormat == INTERNAL_DOUBLE) {
+
+					binary.Read(byteReader, binary.LittleEndian, &sampleFLOAT64)
+
+				} else {
+					// throw new Exception("64-bit PCM not handled");
+					sampleFLOAT64 = 0
+				}
+				samples[c][s] = sampleFLOAT64
+			}
+
+		}
+	}
+	return samples, nil
+}
+
+// Byte Converter
+func (FD *WavReader) ConvertBytesToFloat64amended(myBytes []byte) ([][]float64, error) {
+	//functionName:="ConvertBytesToFloat64"
+	//Calculate the expected number of samples from the input buffer NB we are talking frame samples here
+	//copy channels as a minor optimization
 	sampleSize := (FD.BitDepth / 8) * FD.NumChannels
 	if len(myBytes)%sampleSize != 0 {
 		return nil, fmt.Errorf("invalid data length: %d (expected multiple of %d)", len(myBytes), sampleSize)
@@ -246,6 +344,7 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 // DecodePCMInput reads raw PCM input and sends decoded samples to the channel
 // Handles partial samples and EOF properly for headerless PCM streams
 // DecodePCMInput reads raw PCM input and sends decoded samples to the channel
+// ***** WARNING this function craps out super early****//
 func (FD *WavReader) DecodePCMInput(DecodedSamplesChannel chan [][]float64) error {
 	//	functionName := "DecodePCMInput"
 	//start := time.Now()//
@@ -337,7 +436,8 @@ func (FD *WavReader) DecodePCMInput(DecodedSamplesChannel chan [][]float64) erro
 	return nil
 }
 
-// Function shoudl resume reading the input stream and pass the resulting samples to the output Channel
+// Function should resume reading the input stream and pass the resulting samples to the output Channel
+
 func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	functionName := "DecodeInput"
 	start := time.Now()
@@ -345,9 +445,14 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	TotalSamples := 0                                                            //1 channel
 	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
 	processingBufferSize = processingBufferSize / 6
+
+	FD.debug(fmt.Sprintf("Starting decode at position: %d, expected data size: %d", FD.ReaderCursor, FD.Size))
 	// Smaller buffer for accumulating data
 	// No need to Flush the processing buffer as we are re-using and controlling the read cursor
-	readBufferSize := 4096                     // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
+	// reading data from the input buffer
+	readBufferSize := 4096 // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
+	//readBufferSize = 8192
+
 	if readBufferSize > processingBufferSize { //We don't want the read buffer to be bigger than the processing buffer
 		readBufferSize = processingBufferSize
 	}
@@ -371,7 +476,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 			EOF = true
 
 		}
-
+		FD.ReaderCursor += int(n)
 		// Check if enough space in the processing buffer
 		if filledBytes+n > processingBufferSize {
 
@@ -429,10 +534,11 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 		}
 	}
 	// We are done so close the channel
+	os.Stdin.Sync()
 	close(DecodedSamplesChannel)
 
 	elapsedTime := time.Since(start).Milliseconds()
-	FD.debug(fmt.Sprintf(packageName+":"+functionName+" Total bytes read: %v Total samples read: %v Elapsed time (ms): %v ", TotalBytes, TotalSamples, elapsedTime))
+	FD.debug(fmt.Sprintf(packageName+":"+functionName+"Expected Bytes: %v, Tracked bytes: %v, Total bytes read: %v Total samples read: %v Elapsed time (ms): %v ", FD.Size, FD.ReaderCursor, TotalBytes, TotalSamples, elapsedTime))
 	return nil
 }
 
@@ -694,6 +800,8 @@ func (fd *WavReader) DecodeWavHeader() error {
 	w.ok = false
 	w.pos = 0
 	w.dataOffset = 0
+	// New counter
+
 	// Read the first 12 bytes (RIFF header + size + WAVE)
 	header := make([]byte, 12)
 	if _, err := io.ReadFull(fd.Input, header); err != nil {
@@ -1020,9 +1128,11 @@ func (fd *WavReader) DecodeWavHeader() error {
 		fd.LittleEndian = true
 		fd.ByteOrder = binary.LittleEndian
 	}
-	fd.ReaderCursor = int(w.dataOffset)
+	fd.debug("WavReader DecodeWavHeader: Offset:" + fmt.Sprint(w.dataOffset) + " Pos:" + fmt.Sprint(w.pos))
+	fd.ReaderCursor = int(w.pos)
 	fd.AudioFormat = w.audioFormat
-	fd.Size = w.length
+	//fd.Size = w.length
+	fd.Size = w.dataSize
 	switch fd.BitDepth {
 	case 16:
 		fd.wordLength = 2

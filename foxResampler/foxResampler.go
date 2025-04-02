@@ -10,9 +10,10 @@ import (
 	"fmt"
 	"math"
 	"os/exec"
+	"runtime"
 	"strconv"
+	"sync"
 
-	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
 	"scientificgo.org/fft"
 	//	"github.com/mjibson/go-dsp/fft"
 )
@@ -82,7 +83,7 @@ func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader,
 
 }
 
-func ResamplerWorking96k(inputSamples []float64, fromSampleRate, toSampleRate int) ([]float64, error) {
+func ResamplerDownsample(inputSamples []float64, fromSampleRate, toSampleRate int) ([]float64, error) {
 	if fromSampleRate == toSampleRate {
 		return inputSamples, nil
 	}
@@ -121,6 +122,7 @@ func ResamplerWorking96k(inputSamples []float64, fromSampleRate, toSampleRate in
 	dx := float64(srcLength) / float64(destLength)
 
 	// Upsampling (linear interpolation) or Downsampling (after filter)
+	//upsampling doesn't work that well hence we have another function for it.
 	for i := 0; i < destLength; i++ {
 		x := float64(i) * dx
 		x0 := int(math.Floor(x))
@@ -141,76 +143,183 @@ func ResamplerWorking96k(inputSamples []float64, fromSampleRate, toSampleRate in
 			output[i] = y0 + (y1-y0)*(x-float64(x0))
 		}
 	}
-
 	return output, nil
+
 }
 
-// So far the best solution for internal resampling, although it works well for upsampling and poorly for downsampling
-func ResampleChannel(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
-	// If no resampling required
+// Precompute for all possible tau positions
+type KernelCoeff struct {
+	W, Snc float64
+}
+
+func BesselI0(x float64) float64 {
+	// Polynomial approximation for I0(x), valid for |x| <= 15
+	if x < 0 {
+		x = -x
+	}
+	if x == 0 {
+		return 1.0
+	}
+	if x < 3.75 {
+		t := x / 3.75
+		t *= t
+		return 1.0 + t*(3.5156229+t*(3.0899424+t*(1.2067492+
+			t*(0.2659732+t*(0.0360768+t*0.0045813)))))
+	}
+	t := x / 3.75
+	t = 1.0 / t
+	return (math.Exp(x) / math.Sqrt(x)) * (0.39894228 + t*(0.01328592+
+		t*(0.00225319+t*(-0.00157565+t*(0.00916281+t*(-0.02057706+
+			t*(0.02635537+t*(-0.01647633+t*0.00392377))))))))
+}
+
+// Compensation filter although this is a simplified compensation filter to flatten out the frequency response at high end it is sufficient.
+func applyPassbandCompensation(samples []float64) []float64 {
+	// Design a 3-tap FIR to boost highs (~0.5dB at Nyquist)
+	coeffs := []float64{-0.015, 1.03, -0.015}
+	compensated := make([]float64, len(samples))
+	for i := 1; i < len(samples)-1; i++ {
+		compensated[i] = coeffs[0]*samples[i-1] + coeffs[1]*samples[i] + coeffs[2]*samples[i+1]
+	}
+	return compensated
+}
+
+// Compensation filter (6-tap FIR)
+
+// Optimised Upsample function. Rakes the working function and precomputes/parallelises stuff
+func ResampleUpsample(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
 	if fromSampleRate == toSampleRate {
 		return inputSamples, nil
 	}
-
-	// Best so far, slight hump where low pass filter is applied.
-	var samples []float64
 
 	srcLength := len(inputSamples)
 	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
 	dx := float64(srcLength) / float64(destLength)
 
-	const fmaxDivSR = 0.5
-	const rG = 2 * fmaxDivSR
-
-	// Quality is half the window width
-	//NB a higher quality e.g 100 will result in a flatter filter , at the cost of a lot of performance.
-
+	fmaxDivSR := float64(fromSampleRate) / 2.0 / float64(toSampleRate)
+	beta := 2.0
 	wndWidth2 := quality
-	wndWidth := quality * 2
+	invWndWidth2 := 1.0 / float64(wndWidth2)
+	rAFactor := 2 * math.Pi * fmaxDivSR
+	besselBeta := BesselI0(beta)
+
+	// Precompute tau values to avoid repeated float64 conversions
+	taus := make([]float64, 0, 2*wndWidth2)
+	for tau := -wndWidth2; tau < wndWidth2; tau++ {
+		taus = append(taus, float64(tau))
+	}
+
+	samples := make([]float64, destLength)
+
+	numWorkers := runtime.NumCPU()
+	chunkSize := (destLength + numWorkers - 1) / numWorkers
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
+
+	for w := 0; w < numWorkers; w++ {
+		go func(workerID int) {
+			defer wg.Done()
+			start := workerID * chunkSize
+			end := start + chunkSize
+			if end > destLength {
+				end = destLength
+			}
+			for i := start; i < end; i++ {
+				x := dx * float64(i)
+				rY, sumCoeff := 0.0, 0.0
+				for _, ftau := range taus {
+					j := int(x + ftau)
+					if j < 0 || j >= srcLength {
+						continue
+					}
+
+					delta := float64(j) - x
+					pos := delta * invWndWidth2
+					if pos < -1 || pos > 1 {
+						continue
+					}
+
+					posSq := pos * pos
+					arg := beta * math.Sqrt(1-posSq)
+					rW := BesselI0(arg) / besselBeta
+
+					rA := delta * rAFactor
+					rSnc := 1.0
+					if rA != 0 {
+						rSnc = math.Sin(rA) / rA
+					}
+
+					coeff := rW * rSnc
+					sumCoeff += coeff
+					rY += coeff * inputSamples[j]
+				}
+
+				if sumCoeff != 0 {
+					rY /= sumCoeff
+				}
+				samples[i] = rY
+			}
+		}(w)
+	}
+	wg.Wait()
+
+	return applyPassbandCompensation(samples), nil
+}
+
+// Kaiser window 2 an older version - comment on accuracy
+// whilst there is some ripple effect at the very top end, it is miniscule and this best tracks the origineal
+func ResampleUpsampleWorking(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
+	if fromSampleRate == toSampleRate {
+		return inputSamples, nil
+	}
+
+	srcLength := len(inputSamples)
+	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
+	dx := float64(srcLength) / float64(destLength)
+
+	fmaxDivSR := (float64(fromSampleRate) / 2.0 / float64(toSampleRate))
+	beta := 2.0
+	wndWidth2 := quality
+	samples := make([]float64, 0, destLength)
 
 	x := 0.0
-	var rY, rW, rA, rSnc float64
-	var tau, j int
 	for i := 0; i < destLength; i++ {
-		rY = 0.0
-		for tau = -wndWidth2; tau < wndWidth2; tau++ {
-			// Input sample index
-			j = int(x + float64(tau))
+		rY, sumCoeff := 0.0, 0.0
+		for tau := -wndWidth2; tau < wndWidth2; tau++ {
+			j := int(x + float64(tau))
+			if j < 0 || j >= srcLength {
+				continue
+			}
 
-			// Hann Window. Scale and calculate sinc
-			rW = 0.5 - 0.5*math.Cos(2*math.Pi*(0.5+(float64(j)-x)/float64(wndWidth)))
-			rA = 2 * math.Pi * (float64(j) - x) * fmaxDivSR
-			rSnc = 1.0
+			// Kaiser window
+			pos := (float64(j) - x) / float64(wndWidth2)
+			if pos < -1 || pos > 1 {
+				continue
+			}
+			arg := beta * math.Sqrt(1-pos*pos)
+			rW := BesselI0(arg) / BesselI0(beta)
+
+			// Sinc kernel
+			rA := 2 * math.Pi * (float64(j) - x) * fmaxDivSR
+			rSnc := 1.0
 			if rA != 0 {
 				rSnc = math.Sin(rA) / rA
 			}
 
-			if j >= 0 && j < srcLength {
-				rY += rG * rW * rSnc * inputSamples[j]
-			}
+			coeff := rW * rSnc
+			sumCoeff += coeff
+			rY += coeff * inputSamples[j]
+		}
+
+		if sumCoeff != 0 {
+			rY /= sumCoeff
 		}
 		samples = append(samples, rY)
 		x += dx
 	}
 
-	// Theoretically apply filter before resampling to avoid a bump, however seems to work better after resampling.
-	//num := float64(toSampleRate) / float64(fromSampleRate)
-	// Fmax: Nyquist half of destination sampleRate
-	// Fmax / sampleRater = 0.5
-	// Apply a low pass before resampling - this has been hand-tested
-	var Fp = 21000.0 // End of pass-band - below this frequency everything should pass
-	var Fs = 22000.0 // Start of stop-band - above this frequency everything should be blocked
-	//var Fn = float64(sampleRate) / 2.0 // Nyquist frequency of original Sample Rate
-	var att = 60.0 // Stop-band attenuation in dB - not sure if it makes much difference
-
-	var k = 0       // Number of phases (not used in this example)
-	var beta = -1.0 // Value will be estimated
-	myLowPassImpulse := designLpf(Fp, Fs, float64(toSampleRate), att, k, beta)
-	//myLowPassFilter := foxPEQ.NewPEQFilter(fromSampleRate, 15)
-	myTConvolver := foxConvolver.NewConvolver(myLowPassImpulse)
-	samples = myTConvolver.ConvolveFFT(samples)
-
-	return samples, nil
+	// Apply droop compensation
+	return applyPassbandCompensation(samples), nil
 }
 
 // resample all input samples from fromSampleRate toSampleRate
@@ -221,7 +330,7 @@ func (myResampler *Resampler) Resample() error {
 	}
 	var err error
 	if myResampler.FromSampleRate == myResampler.ToSampleRate {
-		myResampler.debug(fmt.Sprintf(errorPrefix + "writing header.."))
+		myResampler.debug(fmt.Sprintf(errorPrefix + ": Source and Target sample rates are the same.."))
 		return nil
 
 	}
@@ -232,15 +341,14 @@ func (myResampler *Resampler) Resample() error {
 		// Various experiments, non-better than original code
 		if myResampler.FromSampleRate < myResampler.ToSampleRate {
 			//better for upsampling
-			myResampler.debug(fmt.Sprintf(errorPrefix + "upsampling"))
-			myResampler.InputSamples[c], err = ResampleChannel(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+			myResampler.debug(fmt.Sprintf(errorPrefix + ": upsampling"))
+			myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
 		} else {
 			//better for downsampling?
-			//	myResampler.debug(fmt.Sprintf(errorPrefix + "downsampling"))
-			//myResampler.InputSamples[c], err = resampleDown(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
-			//myResampler.InputSamples[c], err = downSample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
-			myResampler.InputSamples[c], err = ResamplerWorking96k(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
-			//myResampler.InputSamples[c], err = resampleDownold(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
+			myResampler.debug(fmt.Sprintf(errorPrefix + ": downsampling"))
+
+			myResampler.InputSamples[c], err = ResamplerDownsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
+
 		}
 		if err != nil {
 			return err

@@ -157,6 +157,7 @@ func TestProcessAudio(t *testing.T) {
 		//	"C:\\temp\\InputFilters\\Test_filter-96k.wav",
 		"C:\\temp\\InputFilters\\Opera_with_Sub_REW_20230303.wav",
 		"C:\\temp\\InputFilters\\iloudSubMini_96k.wav",
+		"C:\\temp\\InputFilters\\96000_Impulses_Cavern4Iloud.wav",
 	}
 	targetSampleRates := []int{96000, 44100, 48000, 192000, 88000}
 	for _, inputFile := range inputFiles {

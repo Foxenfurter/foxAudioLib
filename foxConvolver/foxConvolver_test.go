@@ -638,6 +638,11 @@ func TestFIRConvolvePrototype(t *testing.T) {
 	// Close the doneProcessing channel to signal that decoding is finished
 	fmt.Println("Test: Setting up Convolver")
 	myConvolver := foxConvolver.Convolver{}
+	myResampler := foxResampler.NewResampler()
+	myResampler.DebugOn = true
+	myResampler.FromSampleRate = myFIRDecoder.SampleRate
+	myResampler.ToSampleRate = sampleRate
+	myResampler.Quality = 10
 	myImpulse := make([][]float64, myFIRDecoder.NumChannels)
 	//Internal
 	targetLevel := foxNormalizer.TargetGain(myFIRDecoder.SampleRate, int(sampleRate), 0.89)
@@ -658,14 +663,17 @@ func TestFIRConvolvePrototype(t *testing.T) {
 
 			//Resample Impulse to match signal SampleRate
 			// quality 30 is pretty good
-			err = myConvolver.Resample(decodedResult, myFIRDecoder.SampleRate, sampleRate, 10)
+			//err = myResampler.Resample(decodedResult, myFIRDecoder.SampleRate, sampmyResampler.InputSamplesleRate, 10)
+			myResampler.InputSamples = decodedResult
+			err = myResampler.Resample()
+
 			if err != nil {
 				println("Error resampling: ", err.Error())
 				return
 			}
 			//Append samples to impulse
-			for i := 0; i < min(len(decodedResult), len(myImpulse)); i++ {
-				myImpulse[i] = append(myImpulse[i], decodedResult[i]...)
+			for i := 0; i < min(len(myResampler.InputSamples[0]), len(myImpulse)); i++ {
+				myImpulse[i] = append(myImpulse[i], myResampler.InputSamples[i]...)
 			}
 		}
 		fmt.Println("Test: Length of Impulse", ResultCounter)
@@ -726,7 +734,7 @@ func TestFIRConvolvePrototype(t *testing.T) {
 						//convOut := myConvolvers[i].ConvolveOverlapSave(cnvBuffer[i][:targetSignalLength])
 						// ** No dropouts ~ 1.6s - NB this convolver is not doing this, it is the wrapper
 						// handling OLS properly
-						convOut := myConvolvers[i].DustyConvolver(cnvBuffer[i][:targetSignalLength])
+						convOut := myConvolvers[i].ConvolveOverlapSave(cnvBuffer[i][:targetSignalLength])
 						// dropouts ~ 1.3s
 						//convOut := myConvolvers[i].ConvolveImpulsesFFT(cnvBuffer[i][:targetSignalLength])
 
@@ -844,7 +852,11 @@ func TestFIRConvolve(t *testing.T) {
 
 	// Close the doneProcessing channel to signal that decoding is finished
 	fmt.Println("Test: Setting up Convolver")
-	myConvolver := foxConvolver.Convolver{}
+	myResampler := foxResampler.NewResampler()
+	myResampler.FromSampleRate = myFIRDecoder.SampleRate
+
+	myResampler.ToSampleRate = sampleRate
+	myResampler.Quality = 10
 	myImpulse := make([][]float64, myFIRDecoder.NumChannels)
 	//Internal
 	targetLevel := foxNormalizer.TargetGain(myFIRDecoder.SampleRate, int(sampleRate), 0.89)
@@ -864,7 +876,8 @@ func TestFIRConvolve(t *testing.T) {
 
 			//Resample Impulse to match signal SampleRate
 			// quality 30 is pretty good
-			err = myConvolver.Resample(decodedResult, myFIRDecoder.SampleRate, sampleRate, 10)
+			myResampler.InputSamples = decodedResult
+			err = myResampler.Resample()
 			if err != nil {
 				println("Error resampling: ", err.Error())
 				return
@@ -883,7 +896,7 @@ func TestFIRConvolve(t *testing.T) {
 	// normalize impulse
 	_ = foxNormalizer.Normalize(myImpulse, targetLevel)
 	// Let's start with a single impulse
-	myConvolver = foxConvolver.NewConvolver(myImpulse[0])
+	myConvolver := foxConvolver.NewConvolver(myImpulse[0])
 	// easiest way to get a convolver per channel
 	var myConvolvers []foxConvolver.Convolver
 	myConvolvers = append(myConvolvers, myConvolver)

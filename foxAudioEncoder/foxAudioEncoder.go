@@ -124,44 +124,30 @@ func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 	return myEncoder.writeData(encodedData)
 }
 
-// old version of EncodeSamplesChannel - worked well with files but not stdout and LMS. Required a tiny channel buffer to work,
-func (myEncoder *AudioEncoder) EncodeSamplesChannelOld(samplesChannel <-chan [][]float64, throttleInputChannel chan<- time.Duration) error {
+// EncoderStatus struct
 
-	const functionName = "EncodeSamplesChannel"
-	totalSamples := 0
-	for samples := range samplesChannel {
-
-		start := time.Now()
-
-		err := myEncoder.EncodeData(samples)
-		if err != nil {
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-		}
-		totalSamples += len(samples[0])
-		elapsedTime := time.Since(start)
-		//
-		if throttleInputChannel != nil {
-			throttleInputChannel <- elapsedTime
-		}
-	}
-
-	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Total samples encoded: %v", totalSamples))
-	return nil
+type EncoderStatus struct {
+	EncodedSamples  int64
+	BufferedSamples int64
+	StartTime       time.Time
 }
 
 // Wraps the encoder into a channel based function that takes a stream of inputSamples as [][]float64, throttleInputChannel as duration and a wait group
 // the optional throttleInputChannel will send a delay based upont the encoder processing time to be used by the feeding function in order to slow down any processing
 // this function is optimized for speed and will use a buffer to store samples before encoding
-func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]float64, throttleInputChannel chan<- time.Duration) error {
+func (myEncoder *AudioEncoder) EncodeSamplesChannel(
+	samplesChannel <-chan [][]float64,
+	throttleInputChannel chan<- int64) error {
 	const functionName = "EncodeSamplesChannel"
-	totalSamples := 0
+	var totalSamples int64
+	totalSamples = 0
 	bytesPerSample := myEncoder.BitDepth / 8 * myEncoder.NumChannels
 	targetSamples := TargetBytesPerWrite / bytesPerSample // ~1365
 	buffer := make([][]float64, myEncoder.NumChannels)
 
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Target Samples: %v", targetSamples))
 	for samples := range samplesChannel {
-		start := time.Now()
+		//start := time.Now()
 		for i := range samples {
 			buffer[i] = append(buffer[i], samples[i]...)
 		}
@@ -176,28 +162,37 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(samplesChannel <-chan [][]fl
 			}
 			// Encode the batch
 			//myEncoder.debug(packageName + ":" + functionName + " Encoding batch ")
-			if err := myEncoder.EncodeData(batch); err != nil {
+			err := myEncoder.EncodeData(batch)
+			if err != nil {
+				myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + " Error with Encoder " + err.Error()))
 				return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
 			}
-			totalSamples += len(batch[0])
+			totalSamples += int64(len(batch[0]))
 
 		}
 		// Throttle logic
-		elapsed := time.Since(start)
+		//elapsed := time.Since(start)
 
 		if throttleInputChannel != nil {
-			throttleInputChannel <- elapsed
+			throttleInputChannel <- totalSamples
 		}
 	}
 
 	// Flush remaining samples
 	if len(buffer[0]) > 0 {
-		if err := myEncoder.EncodeData(buffer); err != nil {
+		err := myEncoder.EncodeData(buffer)
+		if err != nil {
+			myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + " Error with final flush of Encoder " + err.Error()))
 			return fmt.Errorf("%s:%s: %w", packageName, functionName, err)
 		}
-		totalSamples += len(buffer[0])
-	}
+		totalSamples += int64(len(buffer[0]))
 
+	}
+	//probably not needed as should no longer be reading by now...
+	if throttleInputChannel != nil {
+		throttleInputChannel <- totalSamples
+		close(throttleInputChannel)
+	}
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Total samples encoded: %v", totalSamples))
 	return nil
 }

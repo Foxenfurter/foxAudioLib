@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -34,6 +34,7 @@ type WavReader struct {
 	Input          io.Reader // Changed from *os.File to io.Reader to *bufio.Reader back to io.Reader
 	AudioFormat    WaveFormat
 	DebugFunc      func(string)
+	TotalSamples   int64
 	// additional for PCM
 	leftoverBytes []byte
 }
@@ -341,108 +342,432 @@ func (FD *WavReader) ConvertBytesToFloat64amended(myBytes []byte) ([][]float64, 
 	return samples, nil
 }
 
-// DecodePCMInput reads raw PCM input and sends decoded samples to the channel
-// Handles partial samples and EOF properly for headerless PCM streams
-// DecodePCMInput reads raw PCM input and sends decoded samples to the channel
-// ***** WARNING this function craps out super early****//
-func (FD *WavReader) DecodePCMInput(DecodedSamplesChannel chan [][]float64) error {
-	//	functionName := "DecodePCMInput"
-	//start := time.Now()//
-	defer close(DecodedSamplesChannel)
+// DecodeInput is a back pressure tracking decoder - works pretty well a few edge cases where EOF not detected....
+func (FD *WavReader) DecodeInput(
+	DecodedSamplesChannel chan [][]float64,
+	feedbackChan <-chan int64,
+) error {
+	functionName := "DecodeInput"
+	MsgHeader := packageName + ":" + functionName + ": "
+	var TotalBytes int64
+	var TotalFrames int64
 
-	sampleSize := (FD.BitDepth / 8) * FD.NumChannels
-	if sampleSize == 0 {
-		return fmt.Errorf("invalid sample size")
+	//maxAhead := 0.0
+
+	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
+	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) / 2
+	readBufferSize := 8192
+
+	// Align buffer sizes with frame boundaries
+	processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
+	if processingBufferSize < bytesPerFrame {
+		processingBufferSize = bytesPerFrame
 	}
 
-	// 1. Verify stream is seekable and get exact size
-	var totalInputBytes int64
-	if seeker, ok := FD.Input.(io.Seeker); ok {
-		size, err := seeker.Seek(0, io.SeekEnd)
-		if err == nil {
-			_, _ = seeker.Seek(0, io.SeekStart) // Reset position
-			totalInputBytes = size
-			FD.debug(fmt.Sprintf("Input size: %d bytes (%d samples)",
-				size, size/int64(sampleSize)))
-		}
-	}
+	FD.debug(fmt.Sprintf("Starting decode with processing buffer: %d bytes (%d frames)",
+		processingBufferSize, processingBufferSize/bytesPerFrame))
 
-	// 2. Use buffered reader for reliable partial reads
-	bufReader := bufio.NewReaderSize(FD.Input, 65536)
+	// Use buffered reader but manage it carefully
+	bufferedInput := bufio.NewReaderSize(FD.Input, readBufferSize)
+	processingBuffer := make([]byte, processingBufferSize)
+	filledBytes := 0
+
+	// -- Back Pressure Handler
 	var (
-		leftover     = make([]byte, 0, sampleSize*2)
-		totalSamples int
+		decoderStart = time.Now()
+
+		lastWriterFrames int64
+		sleepDuration    time.Duration
 	)
+	maxTimeAhead := 0.0
+	targetAhead := 0.8 // seconds
+	minAhead := 0.2
+	latency := 0.0
 
-	for {
-		// 3. Read through buffer for partial read protection
-		data := leftover
-		for len(data) < sampleSize {
-			chunk, err := bufReader.Peek(bufReader.Size())
-			if len(chunk) > 0 {
-				data = append(data, chunk...)
-				bufReader.Discard(len(chunk))
+	eofReceived := false
+
+	for !eofReceived {
+		// 1. Check for buffered data first, even after EOF
+		if bufferedInput.Buffered() > 0 || !eofReceived {
+			// Read directly into processing buffer space
+			copyStart := filledBytes
+			copyEnd := copyStart + min(bufferedInput.Buffered(), processingBufferSize-filledBytes)
+
+			// Directly read into processing buffer to avoid copies
+			n, _ := bufferedInput.Read(processingBuffer[copyStart:copyEnd])
+			filledBytes += n
+
+		}
+
+		// 2. Handle EOF detection
+
+		if !eofReceived {
+			// Check for actual EOF without blocking
+			_, err := bufferedInput.Peek(1)
+			if err == io.EOF {
+				eofReceived = true
+				FD.debug(MsgHeader + "EOF detected with " + strconv.Itoa(bufferedInput.Buffered()) + " bytes remaining")
 			}
-			if err != nil {
-				if err == io.EOF {
-					break
+		}
+
+		// 3. Process filled buffer
+		if filledBytes >= bytesPerFrame || (eofReceived && filledBytes > 0) {
+			// Calculate complete frames available
+			processableBytes := (filledBytes / bytesPerFrame) * bytesPerFrame
+			remainingBytes := filledBytes - processableBytes
+
+			if processableBytes > 0 {
+				// Convert and send complete frames
+				mySamples, convertErr := FD.ConvertBytesToFloat64(processingBuffer[:processableBytes])
+				if convertErr != nil {
+					return fmt.Errorf("%s: conversion error: %w", functionName, convertErr)
 				}
-				return fmt.Errorf("read error: %w", err)
+
+				framesProcessed := int64(len(mySamples[0]))
+				TotalFrames += framesProcessed
+				TotalBytes += int64(processableBytes)
+
+				DecodedSamplesChannel <- mySamples
+				// Normal back pressure logic
+				if feedbackChan != nil {
+					select {
+					case ws := <-feedbackChan:
+						lastWriterFrames = ws
+					default:
+					}
+
+					// 3. Calculate rates (safe division)
+					decoderElapsed := time.Since(decoderStart).Seconds()
+
+					encoderRate := 0.0
+					if decoderElapsed > 0 {
+						encoderRate = float64(lastWriterFrames) / decoderElapsed
+					}
+
+					framesAhead := TotalFrames - lastWriterFrames
+					// we only need to do latency calculation once and it is more efficient to do it here
+					if latency == 0.0 {
+						latency = float64(framesAhead) / float64(FD.SampleRate)
+						FD.debug(fmt.Sprintf(MsgHeader+" Decoder-Encoder Latency: %.3fs", latency))
+					}
+					// 4. Calculate effective time ahead
+					effectiveAhead := 0.0
+					if encoderRate > 0 {
+						effectiveAhead = (float64(TotalFrames-lastWriterFrames) / encoderRate)
+					}
+
+					// 5. Simple throttling logic
+					if effectiveAhead > targetAhead {
+
+						sleepDuration = time.Duration((effectiveAhead - minAhead) * float64(time.Second))
+						if effectiveAhead > maxTimeAhead {
+							maxTimeAhead = effectiveAhead
+						}
+						//Encoder rate is the drain rate and hence the only rate we are interested in
+						//FD.debug(fmt.Sprintf(MsgHeader+" Backpressure tracking decoder is: %.3fs ahead, decoder frames: %d, encoder rate: %.3f, encoder frames: %d", effectiveAhead, TotalFrames, encoderRate, lastWriterFrames))
+
+						//time.Sleep(sleepDuration)
+						sleepStart := time.Now()
+						for time.Since(sleepStart) < sleepDuration {
+							// Check for new feedback every 50ms
+							time.Sleep(50 * time.Millisecond)
+
+							// Check buffer status
+							if bufferedInput.Buffered() > processingBufferSize-filledBytes {
+								FD.debug("Buffer filling during decoder pause - breaking sleep")
+								break
+							}
+
+							select {
+							case ws := <-feedbackChan:
+								lastWriterFrames = ws
+								// Recalculate remaining sleep time
+								decoderElapsed := time.Since(decoderStart).Seconds()
+
+								encoderRate := 0.0
+								if decoderElapsed > 0 {
+									encoderRate = float64(lastWriterFrames) / decoderElapsed
+								}
+								currentAhead := 0.0
+								if encoderRate > 0 {
+
+									currentAhead = (float64(TotalFrames-lastWriterFrames) / encoderRate)
+								}
+								//framesAhead := TotalFrames - lastWriterFramescurrentAhead := float64(TotalFrames-lastWriterFrames) / float64(FD.SampleRate)
+								if currentAhead <= targetAhead {
+									break
+								}
+							default:
+							}
+						}
+					}
+
+				}
+
+				// Preserve remaining bytes
+				if remainingBytes > 0 {
+					copy(processingBuffer, processingBuffer[processableBytes:filledBytes])
+				}
+				filledBytes = remainingBytes
 			}
 		}
 
-		// 4. Process complete samples
-		fullSamples := len(data) / sampleSize
-		if fullSamples > 0 {
-			samples, err := FD.ConvertBytesToFloat64(data[:fullSamples*sampleSize])
-			if err != nil {
-				return fmt.Errorf("conversion error: %w", err)
-			}
-
-			select {
-			case DecodedSamplesChannel <- samples:
-				totalSamples += len(samples[0])
-			case <-time.After(1 * time.Second):
-				return fmt.Errorf("channel timeout")
-			}
-		}
-
-		// 5. Save leftovers using circular buffer
-		leftover = data[fullSamples*sampleSize:]
-		if len(leftover) >= sampleSize*2 {
-			copy(leftover, leftover[len(leftover)-sampleSize*2:])
-			leftover = leftover[:sampleSize*2]
-		}
-
-		// 6. Verify EOF condition strictly
-		if _, err := bufReader.Peek(1); err == io.EOF {
-			if len(leftover) > 0 {
-				FD.debug(fmt.Sprintf("Final partial sample: %X", leftover))
-			}
+		// 5. Final exit condition
+		if eofReceived && bufferedInput.Buffered() == 0 && filledBytes == 0 {
 			break
 		}
 	}
+	if maxTimeAhead > 0 {
+		FD.debug(MsgHeader + fmt.Sprintf("Back Pressure active, Max time decoder was ahead of encoder: %.2fs", maxTimeAhead))
+	}
+	FD.debug(MsgHeader + fmt.Sprintf("Decode complete. Total frames: %d", TotalFrames))
+	return nil
+}
 
-	// 7. Validate input completeness
-	if totalInputBytes > 0 {
-		expected := totalInputBytes / int64(sampleSize)
-		if int64(totalSamples) != expected {
-			return fmt.Errorf("input incomplete: expected %d samples, got %d",
-				expected, totalSamples)
+func (FD *WavReader) DecodeInputT2(
+	DecodedSamplesChannel chan [][]float64,
+	feedbackChan <-chan int64, // Optional feedback channel (receive-only)
+) error {
+	functionName := "DecodeInput"
+	MsgHeader := packageName + ":" + functionName + ": "
+	var TotalBytes int64
+	var TotalFrames int64
+	TotalBytes = 0
+	TotalFrames = 0
+	// only used if limiting speed via feedback channel
+	targetTime := 0.8
+	maxAhead := 0.0
+
+	// Calculate processing buffer size (1 second worth of frames)
+	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
+	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
+	processingBufferSize = processingBufferSize / 10
+
+	FD.debug(fmt.Sprintf("Starting decode at position: %d, expected data size: %d", FD.ReaderCursor, FD.Size))
+	readBufferSize := 1200
+
+	if readBufferSize > processingBufferSize {
+		readBufferSize = processingBufferSize
+	}
+
+	FD.debug(MsgHeader + fmt.Sprintf("Starting decode with processing buffer: %d bytes (%d frames)",
+		processingBufferSize, processingBufferSize/bytesPerFrame))
+
+	// Buffers and state
+	readBuffer := make([]byte, readBufferSize)
+	processingBuffer := make([]byte, processingBufferSize)
+	filledBytes := 0
+	var lastWriterFrames int64 // Only used if feedbackChan != nil
+
+	EOF := false
+	for !EOF {
+		// Read from input source
+		n, err := FD.Input.Read(readBuffer)
+		FD.ReaderCursor += int(n)
+
+		if err != nil {
+			if err != io.EOF {
+				return fmt.Errorf("%s: read error: %w", functionName, err)
+			}
+			FD.debug(MsgHeader + "EOF reached")
+			EOF = true
+		}
+
+		// Process read data in chunks
+		for bytesRemaining := n; bytesRemaining > 0 || (EOF && filledBytes > 0); {
+			copyAmount := min(bytesRemaining, processingBufferSize-filledBytes)
+
+			if copyAmount > 0 {
+				copyStart := n - bytesRemaining
+				copy(processingBuffer[filledBytes:], readBuffer[copyStart:copyStart+copyAmount])
+				filledBytes += copyAmount
+				bytesRemaining -= copyAmount
+			}
+
+			// Process if buffer full or EOF with remaining data
+			if filledBytes == processingBufferSize || (EOF && filledBytes > 0) {
+				// Convert to samples
+				mySamples, convertErr := FD.ConvertBytesToFloat64(processingBuffer[:filledBytes])
+				if convertErr != nil {
+					return fmt.Errorf("%s: conversion error: %w", functionName, convertErr)
+				}
+
+				// Update counters
+				framesProcessed := int64(len(mySamples[0]))
+				TotalFrames += framesProcessed
+				TotalBytes += int64(filledBytes)
+
+				// Send to output channel
+				DecodedSamplesChannel <- mySamples
+
+				// Throttling logic (only if feedback channel provided)
+				if feedbackChan != nil {
+					// Get latest writer position with non-blocking read
+					select {
+					case ws := <-feedbackChan:
+						lastWriterFrames = ws
+					default:
+					}
+
+					// Calculate lead time
+					framesAhead := TotalFrames - lastWriterFrames
+					timeAhead := float64(framesAhead) / float64(FD.SampleRate)
+
+					// Enhanced throttling with wake-on-feedback
+					if timeAhead > targetTime {
+						if timeAhead > maxAhead {
+							maxAhead = timeAhead
+							FD.debug(fmt.Sprintf("Reader too far ahead: %.2fs ahead (reader: %d, writer: %d)",
+								timeAhead, TotalFrames, lastWriterFrames))
+						}
+
+						// Use channel-based wait instead of pure sleep
+						select {
+						case <-time.After(time.Duration((timeAhead - targetTime) * float64(time.Second))):
+						case ws := <-feedbackChan:
+							lastWriterFrames = ws
+						}
+					}
+				}
+
+				// Reset processing buffer
+				filledBytes = 0
+			}
 		}
 	}
 
-	FD.debug(fmt.Sprintf("Completed. Samples: %d", totalSamples))
+	FD.debug(MsgHeader + fmt.Sprintf("Decode complete. Total frames: %d (%.1f seconds)",
+		TotalFrames, float64(TotalFrames)/float64(FD.SampleRate)))
+
+	return nil
+}
+
+func (FD *WavReader) DecodeInputT1(DecodedSamplesChannel chan [][]float64, feedbackChan <-chan int64) error {
+	functionName := "DecodeInput"
+	MsgHeader := packageName + ":" + functionName + ": "
+	var TotalBytes int64
+	var TotalFrames int64
+	TotalBytes = 0
+	TotalFrames = 0
+	// only used if limiting speed via feedback channel
+	targetTime := 0.8
+	maxAhead := 0.0
+
+	// Calculate processing buffer size (1 second worth of frames)
+	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
+	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
+	processingBufferSize = processingBufferSize / 10
+
+	FD.debug(fmt.Sprintf("Starting decode at position: %d, expected data size: %d", FD.ReaderCursor, FD.Size))
+	// Smaller buffer for accumulating data
+	// No need to Flush the processing buffer as we are re-using and controlling the read cursor
+	// reading data from the input buffer
+	readBufferSize := 1200
+	//readBufferSize := 4096 // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
+	//readBufferSize = 8192
+
+	if readBufferSize > processingBufferSize { //We don't want the read buffer to be bigger than the processing buffer
+		readBufferSize = processingBufferSize
+	}
+
+	FD.debug(MsgHeader + fmt.Sprintf("Starting decode with processing buffer: %d bytes (%d frames)",
+		processingBufferSize, processingBufferSize/bytesPerFrame))
+
+	// Buffers and state
+	readBuffer := make([]byte, readBufferSize)
+	processingBuffer := make([]byte, processingBufferSize)
+	filledBytes := 0
+	var lastWriterFrames int64 // Only used if feedbackChan != nil
+
+	EOF := false
+	for !EOF {
+		// Read from input source
+		n, err := FD.Input.Read(readBuffer)
+		FD.ReaderCursor += int(n)
+
+		if err != nil {
+			if err != io.EOF {
+				return fmt.Errorf("%s: read error: %w", functionName, err)
+			}
+			FD.debug(MsgHeader + "EOF reached")
+			EOF = true
+		}
+
+		// Process read data in chunks
+		for bytesRemaining := n; bytesRemaining > 0 || (EOF && filledBytes > 0); {
+			// Calculate how much we can copy
+			copyAmount := min(bytesRemaining, processingBufferSize-filledBytes)
+
+			if copyAmount > 0 {
+				copyStart := n - bytesRemaining
+				copy(processingBuffer[filledBytes:], readBuffer[copyStart:copyStart+copyAmount])
+				filledBytes += copyAmount
+				bytesRemaining -= copyAmount
+			}
+
+			// Process if buffer full or EOF with remaining data
+			if filledBytes == processingBufferSize || (EOF && filledBytes > 0) {
+				// Convert to samples
+				mySamples, convertErr := FD.ConvertBytesToFloat64(processingBuffer[:filledBytes])
+				if convertErr != nil {
+					return fmt.Errorf("%s: conversion error: %w", functionName, convertErr)
+				}
+
+				// Update counters
+				framesProcessed := int64(len(mySamples[0]))
+				TotalFrames += framesProcessed
+				TotalBytes += int64(filledBytes)
+
+				// Send to output channel
+				DecodedSamplesChannel <- mySamples
+
+				// Throttling logic (only if feedback channel provided)
+				if feedbackChan != nil {
+					// Get latest writer position (non-blocking)
+					select {
+					case ws := <-feedbackChan:
+						lastWriterFrames = ws
+					default:
+					}
+
+					// Calculate lead time
+					framesAhead := TotalFrames - lastWriterFrames
+					timeAhead := float64(framesAhead) / float64(FD.SampleRate)
+
+					// Throttle if more than 0.8 seconds ahead (use 0.8 as a buffer)
+
+					if timeAhead > targetTime {
+						sleepDuration := time.Duration((timeAhead - targetTime) * float64(time.Second))
+						if timeAhead > maxAhead {
+							maxAhead = timeAhead
+							FD.debug(fmt.Sprintf("Reader too far ahead: %.2fs ahead ( reader: %d,(writer: %d)", timeAhead, TotalFrames, lastWriterFrames))
+						}
+
+						time.Sleep(sleepDuration)
+					}
+				}
+
+				// Reset processing buffer
+				filledBytes = 0
+			}
+		}
+	}
+
+	FD.debug(MsgHeader + fmt.Sprintf("Decode complete. Total frames: %d (%.1f seconds)",
+		TotalFrames, float64(TotalFrames)/float64(FD.SampleRate)))
+
 	return nil
 }
 
 // Function should resume reading the input stream and pass the resulting samples to the output Channel
 
-func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
+func (FD *WavReader) DecodeInputOld(DecodedSamplesChannel chan [][]float64) error {
 	functionName := "DecodeInput"
 	start := time.Now()
-	TotalBytes := 0
-	TotalSamples := 0                                                            //1 channel
+	var TotalBytes int64
+	var TotalSamples int64
+	TotalBytes = 0
+	TotalSamples = 0                                                             //1 channel
 	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
 	processingBufferSize = processingBufferSize / 6
 
@@ -450,7 +775,8 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	// Smaller buffer for accumulating data
 	// No need to Flush the processing buffer as we are re-using and controlling the read cursor
 	// reading data from the input buffer
-	readBufferSize := 4096 // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
+	readBufferSize := 1200
+	//readBufferSize := 4096 // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
 	//readBufferSize = 8192
 
 	if readBufferSize > processingBufferSize { //We don't want the read buffer to be bigger than the processing buffer
@@ -461,6 +787,13 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	filledBytes := 0
 
 	rowcounter := 0
+	// for throttling
+	// Get audio specs once
+	samplesPerSecond := float64(FD.SampleRate) // * FD.NumChannels)
+	// want to be under 2.0 s ahead
+	throttleThreshold := 1.8 // seconds
+	needThrottle := true
+
 	EOF := false
 	for {
 		// Read into the read buffer
@@ -495,10 +828,26 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 				return errors.New(ErrorText)
 
 			}
-			TotalSamples += len(mySamples[0])
+			TotalSamples += int64(len(mySamples[0]))
 			DecodedSamplesChannel <- mySamples
+			// THROTTLE LOGIC
+			if needThrottle {
+				expectedTime := float64(TotalSamples) / samplesPerSecond
+				elapsedTime := time.Since(start).Seconds()
+				timeAhead := expectedTime - elapsedTime
 
-			TotalBytes += filledBytes
+				if timeAhead > throttleThreshold {
+					sleepDuration := time.Duration((timeAhead - throttleThreshold) * float64(time.Second))
+
+					//FD.debug(fmt.Sprintf("Throttling: %.2fs ahead (threshold %.2fs), sleeping %.2fs",
+					//		timeAhead, throttleThreshold, sleepDuration.Seconds()))
+
+					time.Sleep(sleepDuration)
+
+				}
+			}
+
+			TotalBytes += int64(filledBytes)
 			filledBytes = 0
 
 			// Check for remaining data in the read buffer (if not EOF)
@@ -506,6 +855,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 				copy(processingBuffer, readBuffer[readCursor:n]) // Move remaining data
 				filledBytes += n - readCursor
 			}
+
 		} else { //
 			copy(processingBuffer[filledBytes:], readBuffer[:n])
 			filledBytes += n
@@ -523,20 +873,17 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 					return errors.New(ErrorText)
 
 				}
-				TotalSamples += len(mySamples[0])
+				TotalSamples += int64(len(mySamples[0]))
 				DecodedSamplesChannel <- mySamples
 
-				TotalBytes += filledBytes
+				TotalBytes += int64(filledBytes)
 				filledBytes = 0
 
 			}
 			break
 		}
 	}
-	// We are done so close the channel
-	os.Stdin.Sync()
-	close(DecodedSamplesChannel)
-
+	FD.TotalSamples = TotalSamples
 	elapsedTime := time.Since(start).Milliseconds()
 	FD.debug(fmt.Sprintf(packageName+":"+functionName+"Expected Bytes: %v, Tracked bytes: %v, Total bytes read: %v Total samples read: %v Elapsed time (ms): %v ", FD.Size, FD.ReaderCursor, TotalBytes, TotalSamples, elapsedTime))
 	return nil

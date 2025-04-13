@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 )
@@ -28,16 +27,17 @@ const InputBufferSize = 64000 // I don't think this is used anywhere
 const DefaultDecoderFrameSize int = 1000 // I don't think this is used anywhere
 
 type AudioDecoder struct {
-	SampleRate  int
-	BitDepth    int
-	NumChannels int
-	BigEndian   bool
-	Size        int64 // Size of the audio data
-	Type        string
-	Filename    string // Added for file reading
-	WavDecoder  *foxWavReader.WavReader
-	FrameSample int
-	DebugFunc   func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
+	SampleRate   int
+	BitDepth     int
+	NumChannels  int
+	BigEndian    bool
+	Size         int64 // Size of the audio data
+	Type         string
+	Filename     string // Added for file reading
+	WavDecoder   *foxWavReader.WavReader
+	FrameSample  int
+	TotalSamples int64
+	DebugFunc    func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 
 }
 
@@ -136,15 +136,17 @@ func (myDecoder *AudioDecoder) Initialise() error {
 // Should call the lower level function and pass in the Channel to be used for transmitting decoded samples
 // Throttle Loadre is optional and enables the Decoder to limit the speed of the loader.
 // Current version of wav loader does not need throttling
-func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64, ThrottleLoaderChannel chan time.Duration) error {
+func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64, BackPressureChannel <-chan int64) error {
 	const functionName = "DecodeSamples"
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
-		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel, BackPressureChannel)
+		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		return err
 	case "PCM":
 		//err := myDecoder.WavDecoder.DecodePCMInput(DecodedSamplesChannel)
-		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel, BackPressureChannel)
+		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		return err
 	default:
 		errorText := "unsupported encoder type "

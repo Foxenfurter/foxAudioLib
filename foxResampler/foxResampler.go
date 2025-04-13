@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
+	"github.com/Foxenfurter/foxAudioLib/foxPEQ"
 	"scientificgo.org/fft"
 	//	"github.com/mjibson/go-dsp/fft"
 )
@@ -27,6 +29,7 @@ type Resampler struct {
 	DebugOn     bool //enables debugging
 	DebugFunc   func(string)
 	WarningFunc func(string)
+	debugLogged bool // Tracks if debug messages have been printed
 }
 
 const packageName = "foxResampler"
@@ -184,10 +187,64 @@ func applyPassbandCompensation(samples []float64) []float64 {
 	return compensated
 }
 
-// Compensation filter (6-tap FIR)
+// Kaiser window 2 an older version - comment on accuracy
+// whilst there is some ripple effect at the very top end, it is miniscule and this best tracks the origineal
+func ResampleUpsample(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
+	if fromSampleRate == toSampleRate {
+		return inputSamples, nil
+	}
+
+	srcLength := len(inputSamples)
+	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
+	dx := float64(srcLength) / float64(destLength)
+
+	fmaxDivSR := (float64(fromSampleRate) / 2.0 / float64(toSampleRate))
+	beta := 2.0
+	wndWidth2 := quality
+	samples := make([]float64, 0, destLength)
+
+	x := 0.0
+	for i := 0; i < destLength; i++ {
+		rY, sumCoeff := 0.0, 0.0
+		for tau := -wndWidth2; tau < wndWidth2; tau++ {
+			j := int(x + float64(tau))
+			if j < 0 || j >= srcLength {
+				continue
+			}
+
+			// Kaiser window
+			pos := (float64(j) - x) / float64(wndWidth2)
+			if pos < -1 || pos > 1 {
+				continue
+			}
+			arg := beta * math.Sqrt(1-pos*pos)
+			rW := BesselI0(arg) / BesselI0(beta)
+
+			// Sinc kernel
+			rA := 2 * math.Pi * (float64(j) - x) * fmaxDivSR
+			rSnc := 1.0
+			if rA != 0 {
+				rSnc = math.Sin(rA) / rA
+			}
+
+			coeff := rW * rSnc
+			sumCoeff += coeff
+			rY += coeff * inputSamples[j]
+		}
+
+		if sumCoeff != 0 {
+			rY /= sumCoeff
+		}
+		samples = append(samples, rY)
+		x += dx
+	}
+
+	// Apply droop compensation
+	return applyPassbandCompensation(samples), nil
+}
 
 // Optimised Upsample function. Rakes the working function and precomputes/parallelises stuff
-func ResampleUpsample(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
+func ResampleUpsampleLastEnhance(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
 	if fromSampleRate == toSampleRate {
 		return inputSamples, nil
 	}
@@ -277,7 +334,7 @@ func ResampleUpsampleWorking(inputSamples []float64, fromSampleRate, toSampleRat
 	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
 	dx := float64(srcLength) / float64(destLength)
 
-	fmaxDivSR := (float64(fromSampleRate) / 2.0 / float64(toSampleRate))
+	fmaxDivSR := (float64(fromSampleRate) / 2.0) / float64(toSampleRate)
 	beta := 2.0
 	wndWidth2 := quality
 	samples := make([]float64, 0, destLength)
@@ -322,6 +379,65 @@ func ResampleUpsampleWorking(inputSamples []float64, fromSampleRate, toSampleRat
 	return applyPassbandCompensation(samples), nil
 }
 
+func designBandPassFIR(sampleRate float64) ([]float64, error) {
+	myPEQFilter := foxPEQ.NewPEQFilter(int(sampleRate), 15)
+	// we are double passing them to get a steeper filter
+	err := myPEQFilter.CalcBiquadFilter("lowpass", 22000, 1.8, 0.73, "Q")
+	if err != nil {
+		myErr := fmt.Errorf("Invalid filter definition , %s \n", err.Error())
+		return nil, myErr
+	}
+	err = myPEQFilter.CalcBiquadFilter("lowpass", 22000, 1.8, 0.73, "Q")
+	if err != nil {
+		myErr := fmt.Errorf("Invalid filter definition, %s \n", err.Error())
+		return nil, myErr
+	}
+	err = myPEQFilter.CalcBiquadFilter("highpass", 20, 0.25, 0.73, "Q")
+	if err != nil {
+		myErr := fmt.Errorf("Invalid filter definition, %s \n", err.Error())
+		return nil, myErr
+	}
+	err = myPEQFilter.CalcBiquadFilter("highpass", 20, 0.25, 0.73, "Q")
+	if err != nil {
+		myErr := fmt.Errorf("Invalid filter definition, %s \n", err.Error())
+		return nil, myErr
+	}
+	//	fmt.Printf("Number of filters created: %v\n", len(myPEQFilter.FilterCoefficients))
+	//	fmt.Printf("now generate impulses: \n")
+	myPEQFilter.GenerateFilterImpulse()
+	return myPEQFilter.Impulse, nil
+}
+
+func bandpassLinearUpsample2x(input []float64, fs float64, myDebug func(string)) []float64 {
+	// Step 1: Design band-pass filter
+	myDebug("Get band-pass filter...")
+	myBPFilter, err := designBandPassFIR(fs) // 121 taps for sharp roll-off
+	if err != nil {
+		return nil
+	}
+
+	// Step 2: Apply FIR filter
+	myDebug("Applying band-pass filter...")
+	myConvolver := foxConvolver.NewConvolver(myBPFilter)
+	//filtered := myConvolver.ConvolveFFT(input)
+	filtered := myConvolver.ConvolveFFT(input)
+
+	// Step 3: Linear upsample 2x
+	myDebug("Linear upsample 2x...")
+	upsampled := linearUpsample2x(filtered)
+
+	return upsampled
+}
+
+func linearUpsample2x(input []float64) []float64 {
+	output := make([]float64, len(input)*2)
+	for i := 0; i < len(input)-1; i++ {
+		output[2*i] = input[i]
+		output[2*i+1] = 0.5*input[i] + 0.5*input[i+1] // Linear interpolation
+	}
+	return output
+}
+
 // resample all input samples from fromSampleRate toSampleRate
 func (myResampler *Resampler) Resample() error {
 	const errorPrefix = packageName + ":" + "resampler"
@@ -330,25 +446,50 @@ func (myResampler *Resampler) Resample() error {
 	}
 	var err error
 	if myResampler.FromSampleRate == myResampler.ToSampleRate {
-		myResampler.debug(fmt.Sprintf(errorPrefix + ": Source and Target sample rates are the same.."))
+		if !myResampler.debugLogged {
+			myResampler.debug(fmt.Sprintf(errorPrefix + ": Source and Target sample rates are the same.."))
+			myResampler.debugLogged = true
+		}
 		return nil
-
 	}
 
+	var upsample bool
+	//since both resamples return input samples if the rate is the same we can simplify the code
+	if myResampler.FromSampleRate > myResampler.ToSampleRate {
+		upsample = false
+		if !myResampler.debugLogged {
+			myResampler.debug(fmt.Sprintf(errorPrefix + ": downsampling"))
+			myResampler.debugLogged = true
+		}
+	} else {
+		upsample = true
+		if !myResampler.debugLogged {
+			myResampler.debug(fmt.Sprintf(errorPrefix + ": upsampling"))
+			myResampler.debugLogged = true
+		}
+	}
 	myChannelsLength := len(myResampler.InputSamples)
 	for c := 0; c < myChannelsLength; c++ {
-		// Tried various methods of optimising downsampling, but basically downsampling from 192000 to 44100 is just bad.
+
 		// Various experiments, non-better than original code
-		if myResampler.FromSampleRate < myResampler.ToSampleRate {
+		if upsample {
 			//better for upsampling
-			myResampler.debug(fmt.Sprintf(errorPrefix + ": upsampling"))
-			myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+			if (myResampler.FromSampleRate == 44100 || myResampler.FromSampleRate == 48000) && myResampler.ToSampleRate > 48000 {
+				//myResampler.InputSamples[c] = linearUpsample2x(myResampler.InputSamples[c])
+				myResampler.InputSamples[c] = bandpassLinearUpsample2x(myResampler.InputSamples[c], float64(myResampler.FromSampleRate), myResampler.DebugFunc)
+				TempFromSampleRate := myResampler.FromSampleRate * 2
+				if TempFromSampleRate > myResampler.ToSampleRate {
+					myResampler.InputSamples[c], err = ResamplerDownsample(myResampler.InputSamples[c], TempFromSampleRate, myResampler.ToSampleRate)
+				} else {
+					myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], TempFromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+				}
+
+			} else {
+				myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+			}
 		} else {
-			//better for downsampling?
-			myResampler.debug(fmt.Sprintf(errorPrefix + ": downsampling"))
-
+			//better for downsampling
 			myResampler.InputSamples[c], err = ResamplerDownsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
-
 		}
 		if err != nil {
 			return err

@@ -124,6 +124,7 @@ func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float
 	end := start + myConvolver.overlapLength
 
 	myConvolver.overlapTail = overlappedSignal[start:end]
+
 	if len(overlappedSignal) != len(myConvolver.impulseFFT) {
 		myConvolver.debug("signal length: " + strconv.Itoa(len(overlappedSignal)) + " Impulse: " + strconv.Itoa(len(myConvolver.impulseFFT)))
 		return signalBlock
@@ -146,7 +147,8 @@ func (myConvolver *Convolver) InitForStreaming() {
 	myConvolver.overlapLength = myConvolver.impulseLength      // M-1
 	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
 	// we have pre-computed the signal block length
-	myConvolver.paddedLength = NextPowerOf2(4 * myConvolver.impulseLength)
+	myConvolver.paddedLength = NextPowerOf2(2*myConvolver.impulseLength - 1)
+
 	//myConvolver.paddedLength = (myConvolver.signalBlockLength + myConvolver.overlapLength) // L+M-1 = N -- not technically necessary for next power of 2
 	//
 	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
@@ -362,15 +364,13 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 		myConvolver.Buffer = make([]float64, 0)
 	}
 
-	myConvolver.debug(packageName + ": " + functionName + ": Closing Channel - Remaining Data in Buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " Samples convolved: " + strconv.Itoa(totalProcessed) + " Tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
-
-	close(outputSignalChannel)
+	myConvolver.debug(packageName + ": " + functionName + ": Channel Convolver completed - Remaining Data in Buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " Samples convolved: " + strconv.Itoa(totalProcessed) + " Tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
 
 }
 
 // Simple convolver multiplication calculation for baseline testing, setup to use pre fft Impulse
 func (myConvolver *Convolver) ConvolveSlow(signalBlock []float64) []float64 {
-	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+	if len(myConvolver.FilterImpulse) == 0 {
 		return signalBlock
 	}
 	// Calculate output length based on convolution formula

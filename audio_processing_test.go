@@ -69,7 +69,12 @@ func ProcessAudio(inputFile string, outputFile string, targetSampleRate int, tar
 	fmt.Println("Test: Decoding Data...")
 	WG.Add(1)
 	go func() {
-		defer WG.Done()
+		defer func() {
+			WG.Done()
+			// We are done so close the channel
+			//os.Stdin.Sync()
+			close(DecodedSamplesChannel)
+		}()
 		myDecoder.DecodeSamples(DecodedSamplesChannel, nil)
 		//close(DecodedSamplesChannel) // Close the channel after decoding
 	}()
@@ -113,27 +118,27 @@ func ProcessAudio(inputFile string, outputFile string, targetSampleRate int, tar
 	}()
 
 	fmt.Println("Test: Encoding Data...")
-	WG.Add(1)
-	go func() {
-		defer WG.Done()
-		outputSamples := make([][]float64, myDecoder.NumChannels)
-		for i := range outputSamples {
-			outputSamples[i] = make([]float64, 0)
+	//WG.Add(1)
+	//go func() {
+	//	defer WG.Done()
+	outputSamples := make([][]float64, myDecoder.NumChannels)
+	for i := range outputSamples {
+		outputSamples[i] = make([]float64, 0)
+	}
+	fmt.Println("Test: Structure built now build output Samples...")
+	for samples := range ResampledChannel {
+		for channelIdx, channelData := range samples {
+			outputSamples[channelIdx] = append(outputSamples[channelIdx], channelData...)
 		}
-		fmt.Println("Test: Structure built now build output Samples...")
-		for samples := range ResampledChannel {
-			for channelIdx, channelData := range samples {
-				outputSamples[channelIdx] = append(outputSamples[channelIdx], channelData...)
-			}
-		}
-		fmt.Println("Test: Ready to Normalize...")
-		targetLevel := 0.89
-		targetLevel = foxNormalizer.TargetGainCSharp(myDecoder.SampleRate, myEncoder.SampleRate, targetLevel)
-		fmt.Println("Test: Target Gain: ", targetLevel)
-		foxNormalizer.Normalize(outputSamples, targetLevel)
-		fmt.Println("Test: Outputting...")
-		myEncoder.EncodeData(outputSamples)
-	}()
+	}
+	fmt.Println("Test: Ready to Normalize...")
+	targetLevel := 0.89
+	targetLevel = foxNormalizer.TargetGainCSharp(myDecoder.SampleRate, myEncoder.SampleRate, targetLevel)
+	fmt.Println("Test: Target Gain: ", targetLevel)
+	foxNormalizer.Normalize(outputSamples, targetLevel)
+	fmt.Println("Test: Outputting...")
+	myEncoder.EncodeData(outputSamples)
+	//}()
 
 	fmt.Println("Test: Waiting...")
 	WG.Wait()
@@ -156,7 +161,7 @@ func TestProcessAudio(t *testing.T) {
 		"C:\\temp\\InputFilters\\Test_filter-44k.wav",
 		//	"C:\\temp\\InputFilters\\Test_filter-96k.wav",
 		"C:\\temp\\InputFilters\\Opera_with_Sub_REW_20230303.wav",
-		"C:\\temp\\InputFilters\\iloudSubMini_96k.wav",
+		"C:\\temp\\InputFilters\\iloudSubMini_48k.wav",
 		"C:\\temp\\InputFilters\\96000_Impulses_Cavern4Iloud.wav",
 	}
 	targetSampleRates := []int{96000, 44100, 48000, 192000, 88000}

@@ -64,7 +64,7 @@ func TargetGain(inputRate, outputRate int, baseLevel float64) float64 {
 }
 
 // Calculates the Maximum Gain Value - used for Normalization functions
-func calculateMaxGain(audioData []float64) float64 {
+func CalculateMaxGain(audioData []float64) float64 {
 	maxGain := 0.0
 	if audioData == nil {
 		return maxGain
@@ -80,7 +80,7 @@ func calculateMaxGain(audioData []float64) float64 {
 
 // Normalises and audio signal to the target level using a max and target level.
 // Max Level has been pre-calculated across all channels
-func normalizeAudioChannel(audioImpulse []float64, targetLevel float64, max float64) []float64 {
+func NormalizeAudioChannel(audioImpulse []float64, targetLevel float64, max float64) []float64 {
 	// Check for divide by zero and no normalization needed
 
 	if max == 0.0 || max == targetLevel {
@@ -104,7 +104,7 @@ func Normalize(inputSamples [][]float64, targetLevel float64) float64 {
 	// Find max gain on all channels
 	impulseGain := 0.0
 	for _, channel := range inputSamples {
-		impulseGain = math.Max(calculateMaxGain(channel), math.Abs(impulseGain))
+		impulseGain = math.Max(CalculateMaxGain(channel), math.Abs(impulseGain))
 	}
 	if impulseGain == 0 {
 		return impulseGain
@@ -112,7 +112,7 @@ func Normalize(inputSamples [][]float64, targetLevel float64) float64 {
 
 	// Normalize gain
 	for i := range inputSamples {
-		inputSamples[i] = normalizeAudioChannel(inputSamples[i], targetLevel, impulseGain) // Replace with actual implementation
+		inputSamples[i] = NormalizeAudioChannel(inputSamples[i], targetLevel, impulseGain) // Replace with actual implementation
 
 	}
 

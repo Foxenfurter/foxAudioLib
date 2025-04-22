@@ -56,7 +56,14 @@ func (myConvolver *Convolver) warning(message string) {
 
 func (myConvolver *Convolver) GetPaddedLength() int {
 	return myConvolver.paddedLength
+}
 
+func (myConvolver *Convolver) GetTail() []float64 {
+	return myConvolver.overlapTail
+}
+
+func (myConvolver *Convolver) SetTail(tail []float64) {
+	myConvolver.overlapTail = tail
 }
 
 // Init initializes the convolver structure
@@ -101,7 +108,7 @@ func NextPowerOf2(x int) int {
 
 // Convolver using Overlap and save method. Allows for signal to be sent in blocks e.g. streaming or via channels
 func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float64 {
-	if myConvolver.FilterImpulse == nil || len(myConvolver.FilterImpulse) == 0 {
+	if len(myConvolver.FilterImpulse) == 0 {
 		return signalBlock
 	}
 	//println("Filter Length: ", len(myConvolver.FilterImpulse), " FilterImpulse length: ", myConvolver.impulseLength)
@@ -161,7 +168,10 @@ func (myConvolver *Convolver) InitForStreaming() {
 		paddedFilterImpulse[i] = complex(0, 0)
 	}
 	myConvolver.impulseFFT = fft.Fft(paddedFilterImpulse, false)
-	myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
+	// Check because the overlaptail may have been loaded from a tail file
+	if len(myConvolver.overlapTail) == 0 {
+		myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
+	}
 
 }
 

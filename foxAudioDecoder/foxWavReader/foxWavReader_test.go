@@ -56,7 +56,7 @@ func TestAudioDecoderSoXLoader(t *testing.T) {
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		myDecoder.DecodeInput(DecodedSamplesChannel)
+		myDecoder.DecodeInput(DecodedSamplesChannel, nil)
 
 	}()
 
@@ -111,7 +111,7 @@ func TestReadAndDecodeAudio(t *testing.T) {
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		decoder.DecodeInput(DecodedSamplesChannel)
+		decoder.DecodeInput(DecodedSamplesChannel, nil)
 
 	}()
 

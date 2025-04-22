@@ -13,6 +13,7 @@ import (
 	"time"
 
 	foxWavEncoder "github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxWavEncoder"
+	"github.com/Foxenfurter/foxAudioLib/foxLog"
 )
 
 const packageName = "foxAudioEncoder"
@@ -30,7 +31,7 @@ type AudioEncoder struct {
 
 	DebugFunc  func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 	DebugOn    bool         //enables debugging
-	encoder    EncoderInterface
+	Encoder    EncoderInterface
 	Peak       float64
 	NumSamples int64
 }
@@ -39,6 +40,7 @@ type AudioEncoder struct {
 type EncoderInterface interface {
 	EncodeHeader() ([]byte, error)
 	EncodeData(samples [][]float64) ([]byte, error)
+	EncodeSingleChannel(buffer []float64) ([]byte, error)
 	GetPeak() float64
 }
 
@@ -73,7 +75,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 	switch strings.ToUpper(myEncoder.Type) {
 
 	case "WAV":
-		myEncoder.encoder = &foxWavEncoder.FoxEncoder{
+		myEncoder.Encoder = &foxWavEncoder.FoxEncoder{
 			SampleRate:  myEncoder.SampleRate,
 			BitDepth:    myEncoder.BitDepth,
 			NumChannels: myEncoder.NumChannels,
@@ -86,7 +88,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 			return fmt.Errorf(packageName+":"+functionName+":error writing wav header: %w", err)
 		}
 	case "PCM":
-		myEncoder.encoder = &foxWavEncoder.FoxEncoder{
+		myEncoder.Encoder = &foxWavEncoder.FoxEncoder{
 			SampleRate:  myEncoder.SampleRate,
 			BitDepth:    myEncoder.BitDepth,
 			NumChannels: myEncoder.NumChannels,
@@ -114,12 +116,12 @@ func (myEncoder *AudioEncoder) EncodeHeader() error {
 // Call low level encoder to convert [][]float64 samples to bytesream of choice, and then call output writer
 func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 	const functionName = "EncodeData"
-	encodedData, err := myEncoder.encoder.EncodeData(buffer)
+	encodedData, err := myEncoder.Encoder.EncodeData(buffer)
 
 	if err != nil {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
-	myEncoder.Peak = myEncoder.encoder.GetPeak()
+	myEncoder.Peak = myEncoder.Encoder.GetPeak()
 	myEncoder.NumSamples += int64(len(buffer[0]))
 	return myEncoder.writeData(encodedData)
 }
@@ -130,6 +132,95 @@ type EncoderStatus struct {
 	EncodedSamples  int64
 	BufferedSamples int64
 	StartTime       time.Time
+}
+
+func (myEncoder *AudioEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
+	return myEncoder.Encoder.EncodeSingleChannel(buffer)
+}
+
+// Wraps the encoder into a channel based function that takes a stream of bytes, throttleInputChannel as duration and a wait group
+// the optional throttleInputChannel will send the number of samples processed so far to be used by the feeding function in order to slow down any processing
+// this function is optimized for speed and will use a buffer to store complete samples before encoding
+
+func (myEncoder *AudioEncoder) WriteBytesChannel(
+	BytesChannel <-chan []byte,
+	throttleInputChannel chan<- int64,
+) error {
+	const functionName = "WriteBytesChannel"
+	myEncoder.debug(fmt.Sprintf("%s:%s: Starting", packageName, functionName))
+
+	var (
+		totalSamples  int64
+		bytesPerFrame = myEncoder.BitDepth / 8 * myEncoder.NumChannels
+		targetBytes   = TargetBytesPerWrite // 8192 or other frame-aligned value
+		buffer        []byte
+	)
+
+	// Calculate how many complete samples we can fit in targetBytes
+	targetSamples := targetBytes / bytesPerFrame
+	targetBytes = targetSamples * bytesPerFrame // Ensure byte alignment
+
+	myEncoder.debug(fmt.Sprintf("%s:%s: Target samples: %d (Target Bytes %d bytes)",
+		packageName, functionName, targetSamples, targetBytes))
+
+	for chunk := range BytesChannel {
+		if BytesChannel == nil { // Ensuring we don't process unexpected nil chunks
+			myEncoder.debug(fmt.Sprintf("%s:%s: Bytes Channel closed, breaking loop", packageName, functionName))
+			break
+		}
+		buffer = append(buffer, chunk...)
+		// Process complete frames from buffer
+		for len(buffer) >= targetBytes {
+			frame := buffer[:targetBytes]
+
+			// Write the complete frame
+			if err := myEncoder.writeData(frame); err != nil {
+				return fmt.Errorf("%s:%s: write error: %w", packageName, functionName, err)
+			}
+
+			totalSamples += int64(targetSamples)
+
+			// Update throttle channel
+			if throttleInputChannel != nil {
+				throttleInputChannel <- totalSamples
+			}
+			myEncoder.debug(fmt.Sprintf("%s:%s: inner loop - %d bytes", packageName, functionName, len(buffer)))
+			// Remove processed data from buffer
+			buffer = buffer[targetBytes:]
+		}
+		if len(chunk) == 0 && len(buffer) < targetBytes { // Ensuring we don't process unexpected nil chunks
+			myEncoder.debug(fmt.Sprintf("%s:%s: No more data but buffer residual too small to process", packageName, functionName))
+			break
+		}
+		//let's print a debug message
+		myEncoder.debug(fmt.Sprintf("%s:%s: Still writing %d chunk length %d bytes", packageName, functionName, len(chunk), len(buffer)))
+	}
+
+	// Flush remaining data (partial frame)
+	if len(buffer) > 0 {
+		myEncoder.debug(fmt.Sprintf("%s:%s: Flushing final %d bytes",
+			packageName, functionName, len(buffer)))
+
+		if err := myEncoder.writeData(buffer); err != nil {
+			return fmt.Errorf("%s:%s: final write error: %w", packageName, functionName, err)
+		}
+		totalSamples += int64(len(buffer) / bytesPerFrame)
+	} else {
+		//let's print a debug message
+		myEncoder.debug(fmt.Sprintf("%s:%s: Finished writing - No data to flush", packageName, functionName))
+	}
+	// Final throttle update
+	if throttleInputChannel != nil {
+		select {
+		case throttleInputChannel <- totalSamples:
+		default: // Avoid blocking if the channel isn't ready
+		}
+		close(throttleInputChannel)
+	}
+	myEncoder.NumSamples = totalSamples
+	myEncoder.debug(fmt.Sprintf("%s:%s: Completed. Total samples: %d",
+		packageName, functionName, totalSamples))
+	return nil
 }
 
 // Wraps the encoder into a channel based function that takes a stream of inputSamples as [][]float64, throttleInputChannel as duration and a wait group
@@ -144,6 +235,7 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(
 	bytesPerSample := myEncoder.BitDepth / 8 * myEncoder.NumChannels
 	targetSamples := TargetBytesPerWrite / bytesPerSample // ~1365
 	buffer := make([][]float64, myEncoder.NumChannels)
+	loggedStart := false
 
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Target Samples: %v", targetSamples))
 	for samples := range samplesChannel {
@@ -161,7 +253,11 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(
 				buffer[i] = buffer[i][targetSamples:]
 			}
 			// Encode the batch
-			//myEncoder.debug(packageName + ":" + functionName + " Encoding batch ")
+			if !loggedStart {
+				myEncoder.debug(packageName + ":" + functionName + " Encoding batch ")
+				loggedStart = true
+			}
+
 			err := myEncoder.EncodeData(batch)
 			if err != nil {
 				myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + " Error with Encoder " + err.Error()))
@@ -337,7 +433,7 @@ func (myEncoder *AudioEncoder) AccumulateAndEncode(samples [][]float64, n int) e
 func (myEncoder *AudioEncoder) writeHeader() error {
 	const functionName = "writeHeader"
 	myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + " generate and write Header.."))
-	headerBytes, err := myEncoder.encoder.EncodeHeader()
+	headerBytes, err := myEncoder.Encoder.EncodeHeader()
 	if err != nil {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
@@ -405,34 +501,61 @@ func (e *AudioEncoder) Close() error {
 	return err
 }
 
-func (e *AudioEncoder) writeDataOld(data []byte) error {
-	return writeOutput(data, e.Filename)
+func WriteWavFile(filename string, samples [][]float64, targetSampleRate int,
+	targetBitDepth int, numChannels int, Overwrite bool, logger *foxLog.Logger) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error(fmt.Sprintf("Recovered in EncodeAsync: %v", r))
+		}
+	}()
+
+	// Check if the file already exists
+	if _, err := os.Stat(filename); err == nil {
+		if !Overwrite {
+			logger.Error(fmt.Sprintf("File already exists: %s", filename))
+			return // Exit without encoding
+		}
+		DeleteFile(filename, logger)
+	}
+
+	// Calculate actual sample count-based size
+	size := int64(0)
+	if len(samples) > 0 && len(samples[0]) > 0 {
+		size = int64(len(samples[0])) * int64(numChannels) * int64(targetBitDepth/8)
+	}
+
+	encoder := AudioEncoder{
+		Type:        "Wav",
+		SampleRate:  targetSampleRate,
+		BitDepth:    targetBitDepth,
+		NumChannels: numChannels,
+		Size:        size,
+		Filename:    filename,
+	}
+
+	if err := encoder.Initialise(); err != nil {
+		logger.Error(fmt.Sprintf("Encoder init failed for %s: %v", filename, err))
+		return
+	}
+
+	if err := encoder.EncodeData(samples); err != nil {
+		logger.Error(fmt.Sprintf("Encoding failed for %s: %v", filename, err))
+	} else {
+		logger.Debug(fmt.Sprintf("Successfully encoded %s", filename))
+	}
 }
 
-// Helper function for writing to a file
-func writeOutput(data []byte, filename string) error {
-	const functionName = "writeOutput"
-	if filename == "" {
-		// Write to standard out
-		_, err := os.Stdout.Write(data)
-		if err != nil {
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-
-		}
+func DeleteFile(filePath string, myLogger *foxLog.Logger) error {
+	// Delete the file
+	err := os.Remove(filePath)
+	if err == nil {
+		myLogger.Debug(fmt.Sprintf("File '%s' successfully deleted.", filePath))
+	} else if os.IsNotExist(err) {
+		myLogger.Debug(fmt.Sprintf("File '%s' does not exist.", filePath))
 	} else {
-		// Write to file
-		file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
-		if err != nil {
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-		}
-		defer file.Close()
-		_, err = file.Write(data)
-		if err != nil {
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-		}
-
+		myLogger.Debug(fmt.Sprintf("Error deleting file '%s': %v\n", filePath, err))
 	}
-	return nil
+	return err
 }
 
 // Function to handle debug calls, allowing for different logging implementations

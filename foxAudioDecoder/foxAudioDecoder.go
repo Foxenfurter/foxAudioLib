@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
+	"github.com/Foxenfurter/foxAudioLib/foxLog"
 )
 
 const packageName = "foxAudioDecoder"
@@ -155,8 +157,65 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 
 }
 
-func maxValueForBitDepth(depth int) float64 {
+// Simple file loader, returns a buffer with samples
+func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fileType string, myLogger *foxLog.Logger) ([][]float64, error) {
+	const functionName = "LoadFiletoBuffer"
+	const MsgHeader = packageName + ": " + functionName + ": "
+	myLogger.Debug(MsgHeader + " Loading file...")
+	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
+		return nil, fmt.Errorf("input file %s does not exist", inputFile)
+	}
+	// Decode the audio file
+	myInputDecoder.Type = fileType
+	myInputDecoder.Filename = inputFile
 
+	err := myInputDecoder.Initialise()
+	if err != nil {
+		return nil, fmt.Errorf("%s: decoder init failed: %v", functionName, err)
+	}
+
+	myLogger.Debug(MsgHeader + fmt.Sprintf("File Decoder initialized: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	outputSamples := make([][]float64, myInputDecoder.NumChannels)
+	var WG sync.WaitGroup
+	DecodedSamplesChannel := make(chan [][]float64, 1)
+
+	WG.Add(1)
+	go func() {
+		defer func() {
+			close(DecodedSamplesChannel) // Close the channel after decoding
+			WG.Done()
+		}()
+		err := myInputDecoder.DecodeSamples(DecodedSamplesChannel, nil)
+		if err != nil {
+			myLogger.Error(MsgHeader + "Decoder failed: " + err.Error())
+			return
+		} else {
+			//myLogger.Debug(MsgHeader + fmt.Sprintf(" number of samples decoded %v", myFilterDecoder.TotalSamples))
+		}
+	}()
+
+	WG.Add(1)
+	go func() {
+		defer WG.Done()
+
+		for i := range outputSamples {
+			outputSamples[i] = make([]float64, 0)
+		}
+		//myLogger.Debug(MsgHeader + " Structure built now build output Samples...")
+		for samples := range DecodedSamplesChannel {
+			for channelIdx, channelData := range samples {
+				outputSamples[channelIdx] = append(outputSamples[channelIdx], channelData...)
+			}
+		}
+
+	}()
+
+	WG.Wait()
+	myLogger.Debug(MsgHeader + fmt.Sprintf("File decoded: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	return outputSamples, nil
+} // <-- LoadFiletoBuffer ends here
+
+func maxValueForBitDepth(depth int) float64 {
 	MaxValue := 0.0
 	switch depth {
 	case 16:
@@ -167,6 +226,7 @@ func maxValueForBitDepth(depth int) float64 {
 		MaxValue = 2147483647.0
 	}
 	return MaxValue
+
 }
 
 func (myDecoder *AudioDecoder) Close() {

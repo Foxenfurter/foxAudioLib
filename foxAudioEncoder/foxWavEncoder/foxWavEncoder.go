@@ -87,6 +87,8 @@ func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	// Write the data chunk header to the buffer
 	headerBuffer.WriteString("data")
 	binary.Write(headerBuffer, binary.LittleEndian, int32(dataSize))
+	// Set dithered
+	we.InitDither()
 	//fmt.Println("foxWavEncoder: DataSize: ", uint32(dataSize))
 	return headerBuffer.Bytes(), nil
 }
@@ -171,65 +173,147 @@ func (we *FoxEncoder) convertTo32BitSample(sample float64) []byte {
 		byte((intValue >> 24) & 0xFF),
 	}
 }
-func (we *FoxEncoder) EncodeDataNoDither(buffer [][]float64) ([]byte, error) {
-	totalSamples := len(buffer[0])
-	numChannels := we.NumChannels
 
-	// Validate input
-	if len(buffer) != numChannels {
-		return nil, fmt.Errorf("channel count mismatch")
+func (we *FoxEncoder) encode16BitDithered(buffer []float64, encoded []byte) float64 {
+	const (
+		max            = 32768.0  // 2^15 (maximum positive 16-bit value)
+		min            = -32768.0 // Minimum 16-bit value
+		bytesPerSample = 2        // 16 bits = 2 bytes
+	)
+	invMax := 1.0 / max
+	currentPeak := 0.0
+
+	for i := 0; i < len(buffer); i++ {
+		sample := buffer[i]
+
+		// Track peak in this buffer
+		if abs := math.Abs(sample); abs > currentPeak {
+			currentPeak = abs
+		}
+
+		// Generate noise-shaped dither
+		prevError := we.ditherState[0] // Single channel state
+		ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
+		dithered := sample + ditherNoise - prevError
+
+		// Scale to 16-bit range and clamp
+		scaled := math.Round(dithered * max)
+		scaled = math.Max(min, math.Min(max-1, scaled))
+
+		// Quantize and compute error
+		quantized := scaled * invMax
+		error := dithered - quantized
+		we.ditherState[0] = error * we.noiseCoeff
+
+		// Write to output buffer (little-endian)
+		binary.LittleEndian.PutUint16(encoded[i*bytesPerSample:], uint16(int16(scaled)))
 	}
 
+	return currentPeak
+}
+
+func (we *FoxEncoder) encode24BitDithered(buffer []float64, encoded []byte) float64 {
+	const (
+		max            = 8388608.0  // 2^23 (maximum positive 24-bit value)
+		min            = -8388608.0 // Minimum 24-bit value
+		bytesPerSample = 3          // 24 bits = 3 bytes
+	)
+	invMax := 1.0 / max
+	currentPeak := 0.0
+
+	for i := 0; i < len(buffer); i++ {
+		sample := buffer[i]
+
+		// Track peak in this buffer
+		if abs := math.Abs(sample); abs > currentPeak {
+			currentPeak = abs
+		}
+
+		// Generate noise-shaped dither
+		prevError := we.ditherState[0]
+		ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
+		dithered := sample + ditherNoise - prevError
+
+		// Scale to 24-bit range and clamp
+		scaled := math.Round(dithered * max)
+		scaled = math.Max(min, math.Min(max-1, scaled))
+
+		// Quantize and compute error
+		quantized := scaled * invMax
+		error := dithered - quantized
+		we.ditherState[0] = error * we.noiseCoeff
+
+		// Write 24-bit (little-endian with masking)
+		pos := i * bytesPerSample
+		scaledInt := int32(scaled)
+		encoded[pos] = byte(scaledInt)
+		encoded[pos+1] = byte(scaledInt >> 8)
+		encoded[pos+2] = byte((scaledInt >> 16) & 0xFF) // Mask upper bits
+	}
+
+	return currentPeak
+}
+
+func (we *FoxEncoder) encode32BitDithered(buffer []float64, encoded []byte) float64 {
+	const (
+		max            = 2147483648.0 // 2^31 (maximum positive 32-bit value)
+		min            = -2147483648.0
+		bytesPerSample = 4 // 32 bits = 4 bytes
+	)
+	invMax := 1.0 / max
+	currentPeak := 0.0
+
+	for i := 0; i < len(buffer); i++ {
+		sample := buffer[i]
+
+		// Track peak in this buffer
+		if abs := math.Abs(sample); abs > currentPeak {
+			currentPeak = abs
+		}
+
+		// Generate noise-shaped dither
+		prevError := we.ditherState[0]
+		ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
+		dithered := sample + ditherNoise - prevError
+
+		// Scale to 32-bit range and clamp
+		scaled := math.Round(dithered * max)
+		scaled = math.Max(min, math.Min(max-1, scaled))
+
+		// Quantize and compute error
+		quantized := scaled * invMax
+		error := dithered - quantized
+		we.ditherState[0] = error * we.noiseCoeff
+
+		// Write 32-bit (little-endian)
+		binary.LittleEndian.PutUint32(encoded[i*bytesPerSample:], uint32(int32(scaled)))
+	}
+
+	return currentPeak
+}
+
+func (we *FoxEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
+	totalSamples := len(buffer)
+	if !we.ditherready {
+		we.InitDither()
+	}
 	bytesPerSample := we.BitDepth / 8
-	totalBytes := totalSamples * numChannels * bytesPerSample
-	//fixed size buffer
-	encoded := make([]byte, totalBytes)
+	encoded := make([]byte, totalSamples*bytesPerSample)
+	myPeak := 0.0
 
 	switch we.BitDepth {
-	//encode loops within  switch statement faster than multiple switch statements
 	case 16:
-		max := maxValue16Bit
-		for i := 0; i < totalSamples; i++ {
-			for ch := 0; ch < numChannels; ch++ {
-				pos := (i*numChannels + ch) * bytesPerSample
-				sample := math.Max(-1.0, math.Min(1.0, buffer[ch][i]))
-				//faster than rounding
-				scaled := int16(sample*max + 0.5)
-				binary.LittleEndian.PutUint16(encoded[pos:], uint16(scaled))
-			}
-		}
-
+		myPeak = we.encode16BitDithered(buffer, encoded)
 	case 24:
-		max := float64(maxValue24Bit)
-		for i := 0; i < totalSamples; i++ {
-			for ch := 0; ch < numChannels; ch++ {
-				pos := (i*numChannels + ch) * bytesPerSample
-				sample := math.Max(-1.0, math.Min(1.0, buffer[ch][i]))
-				//faster than rounding
-				scaled := int32(sample*max + 0.5)
-				// Manual little-endian write for 24-bit
-				encoded[pos] = byte(scaled)
-				encoded[pos+1] = byte(scaled >> 8)
-				encoded[pos+2] = byte(scaled >> 16)
-			}
-		}
-
+		myPeak = we.encode24BitDithered(buffer, encoded)
 	case 32:
-		max := float64(maxValue32Bit)
-		for i := 0; i < totalSamples; i++ {
-			for ch := 0; ch < numChannels; ch++ {
-				pos := (i*numChannels + ch) * bytesPerSample
-				sample := math.Max(-1.0, math.Min(1.0, buffer[ch][i]))
-				//faster than rounding
-				scaled := int32(sample*max + 0.5)
-				binary.LittleEndian.PutUint32(encoded[pos:], uint32(scaled))
-			}
-		}
-
+		myPeak = we.encode32BitDithered(buffer, encoded)
 	default:
 		return nil, errors.New("unsupported bit depth")
 	}
-
+	if myPeak > we.Peak {
+		we.Peak = myPeak
+	}
 	return encoded, nil
 }
 
@@ -251,6 +335,7 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 	localpeak := we.Peak
 	var absval float64
 	switch we.BitDepth {
+	// only generate dither for 16 bit
 	case 16:
 		max := maxValue16Bit // 2^15 (not 32767!)
 		min := minValue16Bit
@@ -270,9 +355,6 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 				}
 				// Generate noise-shaped dither
 				prevError := we.ditherState[ch]
-				//rand1 := rand.Float64() - 0.5
-				//rand2 := rand.Float64() - 0.5
-				//dithered := sample + (rand1+rand2)*we.ditherScale - prevError
 
 				ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
 				dithered := sample + ditherNoise - prevError
@@ -297,9 +379,7 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 		}
 
 	case 24:
-		max := maxValue24Bit // 2^23 (not 8388607!)
-		min := minValue24Bit
-		invMax := 1.0 / max
+		// 24 bit
 		for i := 0; i < totalSamples; i++ {
 			basePos := i * numChannels * bytesPerSample
 			for ch := 0; ch < numChannels; ch++ {
@@ -312,31 +392,10 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 				if absval > localpeak {
 					localpeak = absval
 				}
-				// Generate noise-shaped dither
-				prevError := we.ditherState[ch]
-				//				rand1 := rand.Float64() - 0.5
-				//				rand2 := rand.Float64() - 0.5
-				//				dithered := sample + (rand1+rand2)*we.ditherScale - prevError
 
-				ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
-				dithered := sample + ditherNoise - prevError
-
-				// Scale and clamp to 24-bit range
-				scaled := math.Round(dithered * max)
-
-				if scaled < min {
-					scaled = min
-				} else if scaled > max-1 {
-					scaled = max - 1
-				}
-
-				//				scaled = math.Max(min, math.Min(max-1, scaled)) // -8388608 to 8388607
-				quantized := scaled * invMax
-
-				// Update error state
-				error := dithered - quantized
-				we.ditherState[ch] = error * we.noiseCoeff
-
+				sample = math.Max(-1.0, math.Min(1.0, sample))
+				//faster than rounding
+				scaled := int32(sample*maxValue24Bit + 0.5)
 				// Write 24-bit with proper masking
 				scaledInt := int32(scaled)
 				encoded[pos] = byte(scaledInt)
@@ -344,11 +403,10 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 				encoded[pos+2] = byte((scaledInt >> 16) & 0xFF) // Mask upper bits
 			}
 		}
-
 	case 32:
 		max := maxValue32Bit // 2^31 (not 2147483647!)
-		min := minValue32Bit
-		invMax := 1.0 / max
+		//min := minValue32Bit
+		//invMax := 1.0 / max
 		for i := 0; i < totalSamples; i++ {
 			basePos := i * numChannels * bytesPerSample
 			for ch := 0; ch < numChannels; ch++ {
@@ -362,30 +420,12 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 					localpeak = absval
 				}
 				// Generate noise-shaped dither
-				prevError := we.ditherState[ch]
-				//	rand1 := rand.Float64() - 0.5
-				//	rand2 := rand.Float64() - 0.5
-				//	dithered := sample + (rand1+rand2)*we.ditherScale - prevError
 
-				ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
-				dithered := sample + ditherNoise - prevError
+				sample = math.Max(-1.0, math.Min(1.0, sample))
+				//faster than rounding
+				scaled := int32(sample*max + 0.5)
+				binary.LittleEndian.PutUint32(encoded[pos:], uint32(scaled))
 
-				// Scale and clamp to 32-bit range
-				scaled := math.Round(dithered * max)
-				if scaled < min {
-					scaled = min
-				} else if scaled > max-1 {
-					scaled = max - 1
-				}
-
-				//scaled = math.Max(min, math.Min(max-1, scaled)) // -2147483648 to 2147483647
-				quantized := scaled * invMax
-
-				// Update error state
-				error := dithered - quantized
-				we.ditherState[ch] = error * we.noiseCoeff
-
-				binary.LittleEndian.PutUint32(encoded[pos:], uint32(int32(scaled)))
 			}
 		}
 

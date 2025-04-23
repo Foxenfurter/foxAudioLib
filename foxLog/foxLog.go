@@ -52,14 +52,22 @@ func (l *Logger) Log(logType, description string) {
 	if logType == Debug && !l.DebugEnabled {
 		return
 	}
-
-	logEntry := fmt.Sprintf("%s %s [%s] %s\n",
-		time.Now().Format("2006-01-02 15:04:05.999999"),
-		l.ClientId,
-		logType,
-		description,
-	)
-
+	logEntry := ""
+	// Info log type needs to be consistent
+	if logType == "Info" {
+		logEntry = fmt.Sprintf("%s %s %s\n",
+			time.Now().Format("2006-01-02 15:04:05.999999"),
+			l.ClientId,
+			description,
+		)
+	} else {
+		logEntry = fmt.Sprintf("%s %s [%s] %s\n",
+			time.Now().Format("2006-01-02 15:04:05.999999"),
+			l.ClientId,
+			logType,
+			description,
+		)
+	}
 	if _, err := l.LogFile.WriteString(logEntry); err != nil {
 		log.Printf("LOG ERROR: Failed to write log entry: %v", err)
 	}

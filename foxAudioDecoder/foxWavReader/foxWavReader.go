@@ -37,6 +37,7 @@ type WavReader struct {
 	TotalSamples   int64
 	// additional for PCM
 	leftoverBytes []byte
+	RawPeak       float64
 }
 
 // Holds detailed information about the wav Header
@@ -142,16 +143,18 @@ var sampleFLOAT32 float32
 var sampleFLOAT64 float64
 
 // Byte Converter
+// functionName:="ConvertBytesToFloat64"
+// Calculate the expected number of samples from the input buffer NB we are talking frame samples here
+// copy channels as a minor optimization
 func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) {
-	//functionName:="ConvertBytesToFloat64"
-	//Calculate the expected number of samples from the input buffer NB we are talking frame samples here
-	//copy channels as a minor optimization
+
 	numChannels := FD.NumChannels
 	numSamples := uint32(len(myBytes) / ((FD.BitDepth / 8) * (numChannels)))
 
 	byteReader := bytes.NewReader(myBytes)
 
 	samples := make([][]float64, numChannels)
+	rawPeak := 0.0
 	for s := range samples {
 		samples[s] = make([]float64, numSamples)
 	}
@@ -217,9 +220,16 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 				}
 				samples[c][s] = sampleFLOAT64
 			}
-
+			absSample := math.Abs(samples[c][s])
+			if absSample > rawPeak {
+				rawPeak = absSample
+			}
 		}
 	}
+	if rawPeak > FD.RawPeak {
+		FD.RawPeak = rawPeak
+	}
+
 	return samples, nil
 }
 

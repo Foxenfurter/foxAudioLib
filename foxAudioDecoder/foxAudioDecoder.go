@@ -40,7 +40,7 @@ type AudioDecoder struct {
 	FrameSample  int
 	TotalSamples int64
 	DebugFunc    func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
-
+	RawPeak      float64
 }
 
 // NewDecoder creates a new decoder with implicit file opening or Stdin setup
@@ -144,11 +144,13 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 	case "WAV":
 		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel, BackPressureChannel)
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
+		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
 	case "PCM":
 		//err := myDecoder.WavDecoder.DecodePCMInput(DecodedSamplesChannel)
 		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel, BackPressureChannel)
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
+		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
 	default:
 		errorText := "unsupported encoder type "

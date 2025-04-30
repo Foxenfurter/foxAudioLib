@@ -46,12 +46,12 @@ func NewLogger(logFilePath, clientId string, debugEnabled bool) (*Logger, error)
 }
 
 func (l *Logger) Log(logType, description string) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
 	if logType == Debug && !l.DebugEnabled {
 		return
 	}
+	defer l.mu.Unlock()
+
+	l.mu.Lock()
 	logEntry := ""
 	// Info log type needs to be consistent
 	if logType == "Info" {

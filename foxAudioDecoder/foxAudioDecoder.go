@@ -36,6 +36,7 @@ type AudioDecoder struct {
 	Size         int64 // Size of the audio data
 	Type         string
 	Filename     string // Added for file reading
+	File         *os.File
 	WavDecoder   *foxWavReader.WavReader
 	FrameSample  int
 	TotalSamples int64
@@ -49,7 +50,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	// We need to be able to read the header in the filestream before we do any processing
 	// we are going to peak this and 1000 bytes should cover almost all formats.
 	myDecoder.debug("Initialising...")
-	var myFile *os.File
+	//var myFile *os.File
 	if myDecoder.Filename == "" {
 		stat, err := os.Stdin.Stat()
 		if err != nil {
@@ -60,7 +61,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 			myDecoder.debug("Data is being piped to stdin")
 			// Proceed with reading from stdin (using your combinedReader logic)
 			// ...
-			myFile = os.Stdin
+			myDecoder.File = os.Stdin
 
 		} else {
 			return errors.New("no file specified and stdin is not a pipe")
@@ -70,7 +71,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		var err error
 		// clean and standardize the filename
 		myDecoder.Filename = filepath.ToSlash(filepath.Clean(myDecoder.Filename))
-		myFile, err = os.Open(myDecoder.Filename)
+		myDecoder.File, err = os.Open(myDecoder.Filename)
 		if err != nil {
 			return err
 		}
@@ -82,7 +83,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	case "WAV":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
 		// reading data from source
-		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 8192)
+		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myDecoder.File, 8192)
 		//myDecoder.WavDecoder.Input = myFile
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Init the header
@@ -102,7 +103,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
 	case "PCM":
 		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myFile, 8192)
+		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myDecoder.File, 8192)
 		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
 		//Do not Init the header instead we will have received the necessary header information as arguments
 
@@ -132,6 +133,15 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] FrameSample [%v]",
 		myDecoder.SampleRate, myDecoder.NumChannels, myDecoder.BitDepth, myDecoder.Size, myDecoder.FrameSample))
 
+	return nil
+}
+
+func (myDecoder *AudioDecoder) Close() error {
+	const functionName = "Close"
+	if myDecoder.File != nil {
+		myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "Closing file handle for: " + myDecoder.Filename))
+		return myDecoder.File.Close()
+	}
 	return nil
 }
 
@@ -213,6 +223,7 @@ func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fil
 	}()
 
 	WG.Wait()
+
 	myLogger.Debug(MsgHeader + fmt.Sprintf("File decoded: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
 	return outputSamples, nil
 } // <-- LoadFiletoBuffer ends here
@@ -229,13 +240,6 @@ func maxValueForBitDepth(depth int) float64 {
 	}
 	return MaxValue
 
-}
-
-func (myDecoder *AudioDecoder) Close() {
-	const functionName = "Close"
-	// channels are closed in the functions that populate them.
-	// This function is called if any other cleanup is needed
-	myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  All done..."))
 }
 
 // Some functions for identifying the most common audio formats from the header in the bytestream under 1000 bytes needed.

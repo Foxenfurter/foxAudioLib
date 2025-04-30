@@ -419,12 +419,30 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 				if absval > localpeak {
 					localpeak = absval
 				}
-				// Generate noise-shaped dither
 
 				sample = math.Max(-1.0, math.Min(1.0, sample))
 				//faster than rounding
 				scaled := int32(sample*max + 0.5)
 				binary.LittleEndian.PutUint32(encoded[pos:], uint32(scaled))
+
+			}
+		}
+	case 64:
+
+		for i := 0; i < totalSamples; i++ {
+			basePos := i * numChannels * bytesPerSample
+			for ch := 0; ch < numChannels; ch++ {
+				//pos := (i*numChannels + ch) * bytesPerSample
+				pos := basePos + ch*bytesPerSample
+				//sample := math.Max(-1.0, math.Min(1.0, buffer[ch][i]))
+				sample := buffer[ch][i]
+				// get max level for reporting
+				absval = math.Abs(sample)
+				if absval > localpeak {
+					localpeak = absval
+				}
+
+				binary.LittleEndian.PutUint64(encoded[pos:], uint64(sample))
 
 			}
 		}

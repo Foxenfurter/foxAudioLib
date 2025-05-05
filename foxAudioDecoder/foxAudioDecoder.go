@@ -117,6 +117,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 			myDecoder.WavDecoder.ByteOrder = binary.LittleEndian
 			myDecoder.WavDecoder.LittleEndian = true
 		}
+		myDecoder.WavDecoder.IgnoreDataLength = true
 		// If the input buffer is bigger then 2000 than piping in through std in seems to cause issues for the upstream app
 		// hence setting buffer size to too
 		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))

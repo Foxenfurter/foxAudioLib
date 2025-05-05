@@ -36,8 +36,9 @@ type WavReader struct {
 	DebugFunc      func(string)
 	TotalSamples   int64
 	// additional for PCM
-	leftoverBytes []byte
-	RawPeak       float64
+	leftoverBytes    []byte
+	RawPeak          float64
+	IgnoreDataLength bool
 }
 
 // Holds detailed information about the wav Header
@@ -246,11 +247,11 @@ func (FD *WavReader) DecodeInput(
 	//maxAhead := 0.0
 
 	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
-	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) / 2
+	processingBufferSize := FD.SampleRate * ((bytesPerFrame / 8) / 2)
 	readBufferSize := 8192
 
 	// Align buffer sizes with frame boundaries
-	processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
+	//processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
 	if processingBufferSize < bytesPerFrame {
 		processingBufferSize = bytesPerFrame
 	}
@@ -272,7 +273,7 @@ func (FD *WavReader) DecodeInput(
 	)
 	maxTimeAhead := 0.0
 	targetAhead := 0.8 // seconds
-	minAhead := 0.2
+	minAhead := 0.3    // was 0.2
 	latency := 0.0
 
 	eofReceived := false
@@ -360,8 +361,8 @@ func (FD *WavReader) DecodeInput(
 						//time.Sleep(sleepDuration)
 						sleepStart := time.Now()
 						for time.Since(sleepStart) < sleepDuration {
-							// Check for new feedback every 50ms
-							time.Sleep(50 * time.Millisecond)
+							// Check for new feedback every x ms
+							time.Sleep(40 * time.Millisecond) // was 50 ms
 
 							// Check buffer status
 							if bufferedInput.Buffered() > processingBufferSize-filledBytes {
@@ -403,7 +404,13 @@ func (FD *WavReader) DecodeInput(
 		}
 
 		// 5. Final exit condition
-		if eofReceived && bufferedInput.Buffered() == 0 && filledBytes == 0 {
+		/*
+			if eofReceived && bufferedInput.Buffered() == 0 && filledBytes == 0 {
+				break
+			}
+		*/
+		// Replace the final exit condition:
+		if eofReceived && (FD.IgnoreDataLength || (bufferedInput.Buffered() == 0 && filledBytes == 0)) {
 			break
 		}
 	}
@@ -1013,6 +1020,7 @@ func (fd *WavReader) DecodeWavHeader() error {
 		if w.max == 0 {
 			fmt.Println(packageName + functionName + ":Wave file: zero size from header")
 			w.max = math.MaxUint32
+			fd.IgnoreDataLength = true
 		}
 	}
 
@@ -1032,6 +1040,10 @@ func (fd *WavReader) DecodeWavHeader() error {
 	fd.ReaderCursor = int(w.pos)
 	fd.AudioFormat = w.audioFormat
 	//fd.Size = w.length
+	if w.dataSize == 4294967292 || w.dataSize == 0xFFFFFFFF {
+		w.max = math.MaxUint32     // Treat as "unknown length"
+		fd.IgnoreDataLength = true // Add this flag to your WavReader struct
+	}
 	fd.Size = w.dataSize
 	switch fd.BitDepth {
 	case 16:

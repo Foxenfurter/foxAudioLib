@@ -247,11 +247,11 @@ func (FD *WavReader) DecodeInput(
 	//maxAhead := 0.0
 
 	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
-	processingBufferSize := FD.SampleRate * ((bytesPerFrame / 8) / 2)
+	processingBufferSize := FD.SampleRate * (bytesPerFrame / 8)
 	readBufferSize := 8192
 
 	// Align buffer sizes with frame boundaries
-	//processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
+	processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
 	if processingBufferSize < bytesPerFrame {
 		processingBufferSize = bytesPerFrame
 	}
@@ -366,7 +366,7 @@ func (FD *WavReader) DecodeInput(
 
 							// Check buffer status
 							if bufferedInput.Buffered() > processingBufferSize-filledBytes {
-								FD.debug("Buffer filling during decoder pause - breaking sleep")
+								//FD.debug("Buffer filling during decoder pause - breaking sleep")
 								break
 							}
 

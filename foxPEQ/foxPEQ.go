@@ -120,7 +120,7 @@ func (PEQ *PEQFilter) GenerateFilterImpulse() {
 func GenerateImpulseResponse(coeff Coefficients) []float64 {
 	//testing shows that 4000 works for 48000 sampling rate and below, but longer filter needed
 	// for higher sampling rate
-	FilterLength := 4000
+	FilterLength := 8192
 	// Create an array of zeros of length 'FilterLength'
 	impulse := make([]float64, FilterLength)
 

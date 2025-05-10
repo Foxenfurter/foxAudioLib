@@ -153,12 +153,11 @@ func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float
 func (myConvolver *Convolver) InitForStreaming() {
 	// Check to see if any inputs to the calculation have changed and recalulate if necessary
 	myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
-	myConvolver.overlapLength = myConvolver.impulseLength      // M-1
+	myConvolver.overlapLength = myConvolver.impulseLength - 1  // M-1
 	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
 	// we have pre-computed the signal block length
-	myConvolver.paddedLength = NextPowerOf2(2 * myConvolver.impulseLength) //- 1)
+	myConvolver.paddedLength = NextPowerOf2(2 * (myConvolver.impulseLength))
 
-	//myConvolver.paddedLength = (myConvolver.signalBlockLength + myConvolver.overlapLength) // L+M-1 = N -- not technically necessary for next power of 2
 	//
 	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
 	// copy impulse into the padded impulse

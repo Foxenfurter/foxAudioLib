@@ -49,7 +49,10 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	const functionName = "Initialise"
 	// We need to be able to read the header in the filestream before we do any processing
 	// we are going to peak this and 1000 bytes should cover almost all formats.
-	myDecoder.debug("Initialising...")
+	if myDecoder.DebugFunc != nil {
+		myDecoder.DebugFunc(packageName + ":" + functionName + ": Initialising...")
+	}
+
 	//var myFile *os.File
 	if myDecoder.Filename == "" {
 		stat, err := os.Stdin.Stat()
@@ -58,7 +61,9 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		}
 
 		if (stat.Mode() & os.ModeCharDevice) == 0 {
-			myDecoder.debug("Data is being piped to stdin")
+			if myDecoder.DebugFunc != nil {
+				myDecoder.debug("Data is being piped to stdin")
+			}
 			// Proceed with reading from stdin (using your combinedReader logic)
 			// ...
 			myDecoder.File = os.Stdin
@@ -140,7 +145,9 @@ func (myDecoder *AudioDecoder) Initialise() error {
 func (myDecoder *AudioDecoder) Close() error {
 	const functionName = "Close"
 	if myDecoder.File != nil {
-		myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "Closing file handle for: " + myDecoder.Filename))
+		if myDecoder.DebugFunc != nil {
+			myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "Closing file handle for: " + myDecoder.Filename))
+		}
 		return myDecoder.File.Close()
 	}
 	return nil
@@ -151,15 +158,24 @@ func (myDecoder *AudioDecoder) Close() error {
 // Current version of wav loader does not need throttling
 func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64, BackPressureChannel <-chan int64) error {
 	const functionName = "DecodeSamples"
+	var err error
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
-		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel, BackPressureChannel)
+		if BackPressureChannel != nil {
+			err = myDecoder.WavDecoder.DecodeInputBackPressure(DecodedSamplesChannel, BackPressureChannel)
+		} else {
+			err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		}
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
+
 	case "PCM":
-		//err := myDecoder.WavDecoder.DecodePCMInput(DecodedSamplesChannel)
-		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel, BackPressureChannel)
+		if BackPressureChannel != nil {
+			err = myDecoder.WavDecoder.DecodeInputBackPressure(DecodedSamplesChannel, BackPressureChannel)
+		} else {
+			err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+		}
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
@@ -174,7 +190,9 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fileType string, myLogger *foxLog.Logger) ([][]float64, error) {
 	const functionName = "LoadFiletoBuffer"
 	const MsgHeader = packageName + ": " + functionName + ": "
-	myLogger.Debug(MsgHeader + " Loading file...")
+	if myInputDecoder.DebugFunc != nil {
+		myInputDecoder.debug(MsgHeader + " Loading file...")
+	}
 	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
 		return nil, fmt.Errorf("input file %s does not exist", inputFile)
 	}
@@ -187,7 +205,9 @@ func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fil
 		return nil, fmt.Errorf("%s: decoder init failed: %v", functionName, err)
 	}
 
-	myLogger.Debug(MsgHeader + fmt.Sprintf("File Decoder initialized: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	if myInputDecoder.DebugFunc != nil {
+		myInputDecoder.debug(MsgHeader + fmt.Sprintf("File Decoder initialized: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	}
 	outputSamples := make([][]float64, myInputDecoder.NumChannels)
 	var WG sync.WaitGroup
 	DecodedSamplesChannel := make(chan [][]float64, 1)
@@ -225,7 +245,9 @@ func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fil
 
 	WG.Wait()
 
-	myLogger.Debug(MsgHeader + fmt.Sprintf("File decoded: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	if myInputDecoder.DebugFunc != nil {
+		myInputDecoder.debug(MsgHeader + fmt.Sprintf("File decoded: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	}
 	return outputSamples, nil
 } // <-- LoadFiletoBuffer ends here
 

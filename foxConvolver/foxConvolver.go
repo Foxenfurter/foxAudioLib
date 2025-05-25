@@ -6,6 +6,7 @@ package foxConvolver
 
 import (
 	"math"
+	"math/bits"
 	"math/cmplx"
 	"strconv"
 
@@ -66,6 +67,10 @@ func (myConvolver *Convolver) SetTail(tail []float64) {
 	myConvolver.overlapTail = tail
 }
 
+func (myConvolver *Convolver) SetSignalBlockLength(signalBlockLength int) {
+	myConvolver.signalBlockLength = signalBlockLength
+}
+
 // Init initializes the convolver structure
 // supply FIR filter impulse and overlap factor as a value between 0.1 and 0.9
 func NewConvolver(impulse []float64) Convolver {
@@ -102,8 +107,12 @@ func convertComplex128ToFloat64(data []complex128) []float64 {
 }
 
 // return the next power of 2 that is greater than the input
-func NextPowerOf2(x int) int {
+func NextPowerOf2old(x int) int {
 	return int(math.Pow(2, math.Ceil(math.Log2(float64(x)))))
+}
+
+func NextPowerOf2(n int) int {
+	return 1 << bits.Len(uint(n-1))
 }
 
 // Convolver using Overlap and save method. Allows for signal to be sent in blocks e.g. streaming or via channels
@@ -114,13 +123,12 @@ func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float
 	//println("Filter Length: ", len(myConvolver.FilterImpulse), " FilterImpulse length: ", myConvolver.impulseLength)
 	// Check to see if any inputs to the calculation have changed and recalulate if necessary
 	if len(myConvolver.FilterImpulse) != myConvolver.impulseLength || len(signalBlock) != myConvolver.signalBlockLength {
-
 		myConvolver.signalBlockLength = len(signalBlock) // L
 		myConvolver.InitForStreaming()
-
 	}
 
 	overlappedSignal := append(myConvolver.overlapTail, (signalBlock)...)
+
 	// make sure that the signal is the same length as the padded filter.
 	if myConvolver.paddedLength > len(overlappedSignal) {
 		signalPadding := make([]float64, myConvolver.paddedLength-len(overlappedSignal))
@@ -156,7 +164,8 @@ func (myConvolver *Convolver) InitForStreaming() {
 	myConvolver.overlapLength = myConvolver.impulseLength - 1  // M-1
 	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
 	// we have pre-computed the signal block length
-	myConvolver.paddedLength = NextPowerOf2(2 * (myConvolver.impulseLength))
+	//myConvolver.paddedLength = NextPowerOf2(2 * (myConvolver.impulseLength))
+	myConvolver.paddedLength = NextPowerOf2(myConvolver.impulseLength + myConvolver.outputLength - 1)
 
 	//
 	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
@@ -176,80 +185,6 @@ func (myConvolver *Convolver) InitForStreaming() {
 
 }
 
-func (myConvolver *Convolver) ConvolveOverlapSaveNew(signalBlock []float64) []float64 {
-	if len(myConvolver.FilterImpulse) == 0 {
-		return signalBlock
-	}
-
-	// Check to see if any inputs to the calculation have changed and recalulate if necessary
-	if len(myConvolver.FilterImpulse) != myConvolver.impulseLength || len(signalBlock) != myConvolver.signalBlockLength {
-
-		myConvolver.signalBlockLength = len(signalBlock) // L
-		myConvolver.InitForStreaming()
-
-	}
-
-	//Original
-	//overlappedSignal := append(myConvolver.overlapTail, (signalBlock)...)
-
-	//optimisation
-	copy(myConvolver.overlappedBuffer, myConvolver.overlapTail)
-	copy(myConvolver.overlappedBuffer[len(myConvolver.overlapTail):], signalBlock)
-
-	// make sure that the signal is the same length as the padded filter.
-	/*
-		if myConvolver.paddedLength > len(overlappedSignal) {
-			signalPadding := make([]float64, myConvolver.paddedLength-len(overlappedSignal))
-			overlappedSignal = append(overlappedSignal, signalPadding...)
-		}
-	*/
-	// now create next tail - it needs to be done pre-convolution - ignore any padding
-	start := myConvolver.overlapLength + myConvolver.signalBlockLength - myConvolver.overlapLength
-	end := start + myConvolver.overlapLength
-
-	//myConvolver.overlapTail = overlappedSignal[start:end]
-	myConvolver.overlapTail = myConvolver.overlappedBuffer[start:end] // Slicing from reused buffer
-	//now do the convolution
-
-	//	output := myConvolver.convolve(convertFloat64ToComplex128(myConvolver.overlappedBuffer))
-	myConvolver.outputBuffer = myConvolver.convolveOptimised()
-
-	//output := myConvolver.convolve(convertFloat64ToComplex128(overlappedSignal))
-	startOut := myConvolver.overlapLength
-	endOut := startOut + myConvolver.signalBlockLength
-
-	//return output[start:end]
-	return myConvolver.outputBuffer[startOut:endOut]
-}
-
-func (myConvolver *Convolver) convolveOptimised() []float64 {
-
-	// Reuse buffer instead of creating new slices
-	for i := range myConvolver.fftBuffer {
-		if i < len(myConvolver.overlappedBuffer) {
-			myConvolver.fftBuffer[i] = complex(myConvolver.overlappedBuffer[i], 0)
-		} else {
-			myConvolver.fftBuffer[i] = 0
-		}
-	}
-
-	forward := fft.Fft(myConvolver.fftBuffer, false)
-
-	// Multiply in-place
-	for i := range forward {
-		forward[i] *= myConvolver.impulseFFT[i]
-	}
-
-	inverse := fft.Fft(forward, true)
-
-	// Reuse output buffer
-	output := make([]float64, len(inverse))
-	for i := range inverse {
-		output[i] = real(inverse[i])
-	}
-	return output
-}
-
 // minamalistic convolver computes fft and of signal and pre-computed fft for filter
 // returns the complex value
 // func (myConvolver *Convolver) convolve(signal, filter []complex128) []complex128 {
@@ -260,35 +195,8 @@ func (myConvolver *Convolver) convolve(signal []complex128) []float64 {
 		signal[i] *= myConvolver.impulseFFT[i]
 
 	}
-	return convertComplex128ToFloat64(fft.Fft(signal, true))
-}
-
-// Initialise Convolver for Streaming convolution - prebuilds the Impulse FFT and sets up the overlap
-// calculates the target size for the signal
-func (myConvolver *Convolver) InitForStreamingNew() {
-	// Check to see if any inputs to the calculation have changed and recalulate if necessary
-	myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
-	myConvolver.overlapLength = myConvolver.impulseLength      // M-1
-	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
-	// we have pre-computed the signal block length
-	myConvolver.paddedLength = NextPowerOf2(4 * (myConvolver.impulseLength))
-	myConvolver.overlappedBuffer = make([]float64, myConvolver.paddedLength)
-	myConvolver.complexBuffer = make([]complex128, myConvolver.paddedLength)
-	myConvolver.fftBuffer = make([]complex128, myConvolver.paddedLength)
-	//myConvolver.paddedLength = (myConvolver.signalBlockLength + myConvolver.overlapLength) // L+M-1 = N -- not technically necessary for next power of 2
-	//
-	paddedFilterImpulse := make([]complex128, myConvolver.paddedLength)
-	// copy impulse into the padded impulse
-	for i := 0; i < myConvolver.impulseLength; i++ {
-		paddedFilterImpulse[i] = complex(myConvolver.FilterImpulse[i], 0)
-	}
-	// Fill remainder of padded impulse array with zeros
-	for i := myConvolver.impulseLength; i < len(paddedFilterImpulse); i++ {
-		paddedFilterImpulse[i] = complex(0, 0)
-	}
-	myConvolver.impulseFFT = fft.Fft(paddedFilterImpulse, false)
-	myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
-
+	signal = fft.Fft(signal, true)
+	return convertComplex128ToFloat64(signal)
 }
 
 // Initialise Convolver for normal FFT type convolution & prebuilds the ImpulseFFT
@@ -301,7 +209,7 @@ func (myConvolver *Convolver) initNormal(ImpulseLength int, SignalBlockLength in
 	myConvolver.impulseLength = ImpulseLength         // M
 	myConvolver.signalBlockLength = SignalBlockLength //L
 	// multiplying by 4 is arbitrary - seems a reasonable compromise between performance and latency
-	myConvolver.paddedLength = NextPowerOf2(max(ImpulseLength, SignalBlockLength)) //N
+	myConvolver.paddedLength = NextPowerOf2(ImpulseLength + SignalBlockLength - 1) //N
 	myConvolver.outputLength = myConvolver.signalBlockLength                       //equal to L
 
 	myConvolver.overlappedBuffer = make([]float64, myConvolver.paddedLength)
@@ -327,18 +235,27 @@ func (myConvolver *Convolver) initNormal(ImpulseLength int, SignalBlockLength in
 // Must use overlap and save mechanism for convolving to avoid dropouts and other glitches.
 func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalChannel chan []float64) {
 	functionName := "ConvolveChannel"
-	myConvolver.InitForStreaming()
-	totalProcessed := 0
-	targetSignalLength := myConvolver.GetPaddedLength() - len(myConvolver.FilterImpulse)
 	NoConvolverMessage := false
+	CanConvolve := true
+	totalProcessed := 0
+	targetSignalLength := 0
+	if len(myConvolver.FilterImpulse) == 0 {
+		CanConvolve = false
+	}
+	if CanConvolve {
+		myConvolver.InitForStreaming()
 
-	if myConvolver.DebugOn {
-		myConvolver.debug(packageName + ": " + functionName + ": targetSignalLength: " + strconv.Itoa(targetSignalLength))
+		//targetSignalLength := myConvolver.GetPaddedLength() - myConvolver.impulseLength + 1 // This is N - M + 1
+		targetSignalLength = myConvolver.outputLength
+
+		if myConvolver.DebugOn {
+			myConvolver.debug(packageName + ": " + functionName + ": targetSignalLength: " + strconv.Itoa(targetSignalLength))
+		}
 	}
 
 	for inputBlock := range inputSignalChannel {
 
-		if myConvolver.impulseLength == 0 {
+		if !CanConvolve {
 			// Nothing to convolve with so just hand on the input - only log once
 			if !NoConvolverMessage {
 				myConvolver.debug(packageName + ": " + functionName + ": Nothing to convolve with")
@@ -390,45 +307,6 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 
 }
 
-// Simple convolver multiplication calculation for baseline testing, setup to use pre fft Impulse
-func (myConvolver *Convolver) ConvolveSlow(signalBlock []float64) []float64 {
-	if len(myConvolver.FilterImpulse) == 0 {
-		return signalBlock
-	}
-	// Calculate output length based on convolution formula
-	outputLength := len(myConvolver.FilterImpulse) + len(signalBlock) - 1
-
-	// Initialize result slice with zeros
-	result := make([]float64, outputLength)
-
-	// Perform convolution using nested loops
-	for i := 0; i < len(signalBlock); i++ {
-		for j := 0; j < len(myConvolver.FilterImpulse); j++ {
-			result[i+j] += myConvolver.FilterImpulse[j] * signalBlock[i]
-		}
-	}
-
-	return result[:len(signalBlock)]
-}
-
-// Simple convolver multiplication calculation for baseline testing
-func ConvolveSlow(impulse1 []float64, impulse2 []float64) []float64 {
-	// Calculate output length based on convolution formula
-	outputLength := len(impulse1) + len(impulse2) - 1
-
-	// Initialize result slice with zeros
-	result := make([]float64, outputLength)
-
-	// Perform convolution using nested loops
-	for i := 0; i < len(impulse1); i++ {
-		for j := 0; j < len(impulse2); j++ {
-			result[i+j] += impulse1[i] * impulse2[j]
-		}
-	}
-
-	return result
-}
-
 // use convolver structure with precomputed Impulse values and then convolve signal
 func (myConvolver *Convolver) ConvolveFFT(signal []float64) []float64 {
 	if len(myConvolver.FilterImpulse) == 0 {
@@ -440,7 +318,7 @@ func (myConvolver *Convolver) ConvolveFFT(signal []float64) []float64 {
 
 	paddedImpulse := make([]complex128, myConvolver.paddedLength)
 	paddedSignal := make([]complex128, myConvolver.paddedLength)
-
+	validLength := signalLength + myConvolver.impulseLength - 1
 	for i := 0; i < myConvolver.impulseLength; i++ {
 
 		paddedImpulse[i] = complex(myConvolver.FilterImpulse[i], 0)
@@ -451,11 +329,12 @@ func (myConvolver *Convolver) ConvolveFFT(signal []float64) []float64 {
 		paddedSignal[i] = complex(signal[i], 0)
 	}
 
-	myConvolver.impulseFFT = fft.Fft(paddedImpulse, false)
+	//myConvolver.impulseFFT = fft.Fft(paddedImpulse, false)
 	//using a temporary variable for readability
 	output := myConvolver.convolve(paddedSignal)
+
 	//now truncate output back to original signal length
-	return output[:signalLength]
+	return output[:validLength]
 
 }
 

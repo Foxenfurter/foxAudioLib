@@ -127,7 +127,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		// hence setting buffer size to too
 		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
 		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
-		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
+		myDecoder.Size = int64(myDecoder.WavDecoder.GetMaxDataSize())
 
 	default:
 		errorText := "unsupported encoder type "
@@ -163,6 +163,7 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 	case "WAV":
 		if BackPressureChannel != nil {
 			err = myDecoder.WavDecoder.DecodeInputBackPressure(DecodedSamplesChannel, BackPressureChannel)
+
 		} else {
 			err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 		}
@@ -173,6 +174,7 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 	case "PCM":
 		if BackPressureChannel != nil {
 			err = myDecoder.WavDecoder.DecodeInputBackPressure(DecodedSamplesChannel, BackPressureChannel)
+
 		} else {
 			err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 		}

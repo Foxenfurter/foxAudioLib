@@ -10,9 +10,7 @@ import (
 	"fmt"
 	"math"
 	"os/exec"
-	"runtime"
 	"strconv"
-	"sync"
 
 	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
 	"github.com/Foxenfurter/foxAudioLib/foxPEQ"
@@ -240,86 +238,6 @@ func ResampleUpsample(inputSamples []float64, fromSampleRate, toSampleRate, qual
 	}
 
 	// Apply droop compensation
-	return applyPassbandCompensation(samples), nil
-}
-
-// Optimised Upsample function. Rakes the working function and precomputes/parallelises stuff
-func ResampleUpsampleLastEnhance(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
-	if fromSampleRate == toSampleRate {
-		return inputSamples, nil
-	}
-
-	srcLength := len(inputSamples)
-	destLength := int(float64(srcLength) * float64(toSampleRate) / float64(fromSampleRate))
-	dx := float64(srcLength) / float64(destLength)
-
-	fmaxDivSR := float64(fromSampleRate) / 2.0 / float64(toSampleRate)
-	beta := 2.0
-	wndWidth2 := quality
-	invWndWidth2 := 1.0 / float64(wndWidth2)
-	rAFactor := 2 * math.Pi * fmaxDivSR
-	besselBeta := BesselI0(beta)
-
-	// Precompute tau values to avoid repeated float64 conversions
-	taus := make([]float64, 0, 2*wndWidth2)
-	for tau := -wndWidth2; tau < wndWidth2; tau++ {
-		taus = append(taus, float64(tau))
-	}
-
-	samples := make([]float64, destLength)
-
-	numWorkers := runtime.NumCPU()
-	chunkSize := (destLength + numWorkers - 1) / numWorkers
-	var wg sync.WaitGroup
-	wg.Add(numWorkers)
-
-	for w := 0; w < numWorkers; w++ {
-		go func(workerID int) {
-			defer wg.Done()
-			start := workerID * chunkSize
-			end := start + chunkSize
-			if end > destLength {
-				end = destLength
-			}
-			for i := start; i < end; i++ {
-				x := dx * float64(i)
-				rY, sumCoeff := 0.0, 0.0
-				for _, ftau := range taus {
-					j := int(x + ftau)
-					if j < 0 || j >= srcLength {
-						continue
-					}
-
-					delta := float64(j) - x
-					pos := delta * invWndWidth2
-					if pos < -1 || pos > 1 {
-						continue
-					}
-
-					posSq := pos * pos
-					arg := beta * math.Sqrt(1-posSq)
-					rW := BesselI0(arg) / besselBeta
-
-					rA := delta * rAFactor
-					rSnc := 1.0
-					if rA != 0 {
-						rSnc = math.Sin(rA) / rA
-					}
-
-					coeff := rW * rSnc
-					sumCoeff += coeff
-					rY += coeff * inputSamples[j]
-				}
-
-				if sumCoeff != 0 {
-					rY /= sumCoeff
-				}
-				samples[i] = rY
-			}
-		}(w)
-	}
-	wg.Wait()
-
 	return applyPassbandCompensation(samples), nil
 }
 

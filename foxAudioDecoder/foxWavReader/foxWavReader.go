@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/bits"
 	"reflect"
 	"strconv"
 	"sync"
@@ -41,6 +42,7 @@ type WavReader struct {
 	leftoverBytes    []byte
 	RawPeak          float64
 	IgnoreDataLength bool
+	Length           uint32
 }
 
 // Holds detailed information about the wav Header
@@ -102,6 +104,17 @@ func (fd *WavReader) GetLittleEndian() bool {
 	return fd.LittleEndian
 
 }
+func (fd *WavReader) GetAudioFormatString() string {
+	return fmt.Sprintf("%d", fd.AudioFormat)
+}
+
+func (fd *WavReader) GetMaxDataSize() uint32 {
+	return maxDataSize
+}
+
+func (fd *WavReader) GetAudioFormat() WaveFormat {
+	return fd.AudioFormat
+}
 
 // --------------Setters--------------------------------
 // SetSampleRate sets the SampleRate field of FoxDecoder.
@@ -145,6 +158,8 @@ var sampleINT32 int32
 var sampleFLOAT32 float32
 var sampleFLOAT64 float64
 
+const maxDataSize uint32 = 4294967292
+
 func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) {
 	numChannels := FD.NumChannels
 	bytesPerSample := (FD.BitDepth / 8) * numChannels
@@ -160,14 +175,16 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 	dataPtr := unsafe.Pointer(header.Data)
 
 	switch FD.BitDepth {
+	case 8:
+		FD.convert8Bit(dataPtr, samples, numSamples, &rawPeak, len(myBytes))
 	case 16:
-		FD.convert16Bit(dataPtr, samples, numSamples, &rawPeak)
+		FD.convert16Bit(dataPtr, samples, numSamples, &rawPeak, len(myBytes))
 	case 24:
-		FD.convert24Bit(dataPtr, samples, numSamples, &rawPeak)
+		FD.convert24Bit(dataPtr, samples, numSamples, &rawPeak, len(myBytes))
 	case 32:
-		FD.convert32Bit(dataPtr, samples, numSamples, &rawPeak)
+		FD.convert32Bit(dataPtr, samples, numSamples, &rawPeak, len(myBytes))
 	case 64:
-		FD.convert64Bit(dataPtr, samples, numSamples, &rawPeak)
+		FD.convert64Bit(dataPtr, samples, numSamples, &rawPeak, len(myBytes))
 	}
 
 	if rawPeak > FD.RawPeak {
@@ -177,16 +194,47 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 	return samples, nil
 }
 
-func (FD *WavReader) convert16Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64) {
-	const bytesPerSample = 2
-	scale := 1.0 / math.Pow(2, 15)
-	step := bytesPerSample * FD.NumChannels
+func (FD *WavReader) convert8Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
+	const bytesPerSample = 1
 
+	step := bytesPerSample * FD.NumChannels
+	// Calculate the start address of myBytes for offset checks
+	start := uintptr(dataPtr)
 	for c := 0; c < FD.NumChannels; c++ {
 		chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(c*bytesPerSample))
 		channel := samples[c]
 
 		for s := 0; s < numSamples; s++ {
+			offset := uintptr(chanPtr) - start
+			if int(offset)+1 > lenmyBytes {
+				return
+			}
+			val := int8(*(*uint8)(chanPtr) - 128) // Convert to signed
+			converted := float64(val) * scale8Bit
+			if abs := math.Abs(converted); abs > *rawPeak {
+				*rawPeak = abs
+			}
+			channel[s] = converted
+			chanPtr = unsafe.Pointer(uintptr(chanPtr) + uintptr(step))
+		}
+	}
+}
+
+func (FD *WavReader) convert16Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
+	const bytesPerSample = 2
+
+	step := bytesPerSample * FD.NumChannels
+	// Calculate the start address of myBytes for offset checks
+	start := uintptr(dataPtr)
+	for c := 0; c < FD.NumChannels; c++ {
+		chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(c*bytesPerSample))
+		channel := samples[c]
+
+		for s := 0; s < numSamples; s++ {
+			offset := uintptr(chanPtr) - start
+			if int(offset)+2 > lenmyBytes {
+				return
+			}
 			var val int16
 			if FD.LittleEndian {
 				val = int16(binary.LittleEndian.Uint16((*[2]byte)(chanPtr)[:]))
@@ -194,7 +242,7 @@ func (FD *WavReader) convert16Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 				val = int16(binary.BigEndian.Uint16((*[2]byte)(chanPtr)[:]))
 			}
 
-			converted := float64(val) * scale
+			converted := float64(val) * scale16Bit
 			if abs := math.Abs(converted); abs > *rawPeak {
 				*rawPeak = abs
 			}
@@ -204,28 +252,36 @@ func (FD *WavReader) convert16Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 	}
 }
 
-func (FD *WavReader) convert24Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64) {
+func (FD *WavReader) convert24Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
 	const bytesPerSample = 3
-	scale := 1.0 / math.Pow(2, 23)
-	step := bytesPerSample * FD.NumChannels
 
+	step := bytesPerSample * FD.NumChannels
+	// Calculate the start address of myBytes for offset checks
+	start := uintptr(dataPtr)
 	for c := 0; c < FD.NumChannels; c++ {
 		chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(c*bytesPerSample))
 		channel := samples[c]
 
 		for s := 0; s < numSamples; s++ {
-			var raw int32
+			offset := uintptr(chanPtr) - start
+			if int(offset)+3 > lenmyBytes {
+				return
+			}
 			b := (*[3]byte)(chanPtr)
 
+			var raw int32
 			if FD.LittleEndian {
-				raw = int32(b[2])<<16 | int32(b[1])<<8 | int32(b[0])
-				raw = (raw << 8) >> 8 // Sign extend
-			} else {
-				raw = int32(b[0])<<16 | int32(b[1])<<8 | int32(b[2])
-				raw = (raw << 8) >> 8 // Sign extend
-			}
+				// Little-endian: bytes are [LSB, Mid, MSB]
 
-			converted := float64(raw) * scale
+				raw = int32(b[2])<<16 | int32(b[1])<<8 | int32(b[0])
+			} else {
+				// Big-endian: bytes are [MSB, Mid, LSB]
+				raw = int32(b[0])<<16 | int32(b[1])<<8 | int32(b[2])
+			}
+			// Sign extend 24-bit to 32-bit
+			raw = (raw << 8) >> 8 // Equivalent to arithmetic shift
+
+			converted := float64(raw) * scale24Bit
 			if abs := math.Abs(converted); abs > *rawPeak {
 				*rawPeak = abs
 			}
@@ -235,17 +291,67 @@ func (FD *WavReader) convert24Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 	}
 }
 
-func (FD *WavReader) convert32Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64) {
+func (FD *WavReader) convert32Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
+	const bytesPerSample = 4
+	step := bytesPerSample * FD.NumChannels // Total bytes per frame (all channels)
+	start := uintptr(dataPtr)
+
+	// Pre-calculate maximum allowed offset to avoid per-sample checks
+	maxOffset := lenmyBytes - bytesPerSample
+
+	for s := 0; s < numSamples; s++ {
+		// Process all channels for this sample first
+		for c := 0; c < FD.NumChannels; c++ {
+			chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(s*step) + uintptr(c*bytesPerSample))
+			offset := uintptr(chanPtr) - start
+
+			// Safety check for entire sample block
+			if offset > uintptr(maxOffset) || c >= len(samples) {
+				return
+			}
+
+			var converted float64
+			if FD.AudioFormat == PCM {
+				// Handle 32-bit signed integer (PCM)
+				raw := binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:])
+				if !FD.LittleEndian { // Handle big-endian PCM if needed
+					raw = bits.ReverseBytes32(raw)
+				}
+				converted = float64(int32(raw)) * (1.0 / 2147483648.0)
+			} else {
+				// Handle 32-bit float (IEEE_FLOAT)
+				raw := binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:])
+				if !FD.LittleEndian { // Handle big-endian float
+					raw = bits.ReverseBytes32(raw)
+				}
+				converted = float64(math.Float32frombits(raw))
+			}
+
+			// Update peak and store sample
+			if abs := math.Abs(converted); abs > *rawPeak {
+				*rawPeak = abs
+			}
+			samples[c][s] = converted
+		}
+	}
+}
+
+func (FD *WavReader) convert32BitOld(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
 	const bytesPerSample = 4
 	step := bytesPerSample * FD.NumChannels
-
+	// Calculate the start address of myBytes for offset checks
+	start := uintptr(dataPtr)
 	for c := 0; c < FD.NumChannels; c++ {
 		chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(c*bytesPerSample))
 		channel := samples[c]
 
 		if FD.AudioFormat == PCM {
-			scale := 1.0 / math.Pow(2, 31)
+
 			for s := 0; s < numSamples; s++ {
+				offset := uintptr(chanPtr) - start
+				if int(offset)+4 > lenmyBytes {
+					return
+				}
 				var val int32
 				if FD.LittleEndian {
 					val = int32(binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:]))
@@ -253,7 +359,7 @@ func (FD *WavReader) convert32Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 					val = int32(binary.BigEndian.Uint32((*[4]byte)(chanPtr)[:]))
 				}
 
-				converted := float64(val) * scale
+				converted := float64(val) * scale32Bit
 				if abs := math.Abs(converted); abs > *rawPeak {
 					*rawPeak = abs
 				}
@@ -262,8 +368,19 @@ func (FD *WavReader) convert32Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 			}
 		} else {
 			for s := 0; s < numSamples; s++ {
-				val := math.Float32frombits(binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:]))
-				converted := float64(val)
+				offset := uintptr(chanPtr) - start
+				if int(offset)+4 > lenmyBytes {
+					return
+				}
+				var val uint32
+				if FD.LittleEndian {
+					val = binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:])
+				} else {
+					val = binary.BigEndian.Uint32((*[4]byte)(chanPtr)[:])
+				}
+				converted := float64(math.Float32frombits(val))
+				//val := math.Float32frombits(binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:]))
+				//	converted := float64(val)
 				if abs := math.Abs(converted); abs > *rawPeak {
 					*rawPeak = abs
 				}
@@ -274,215 +391,136 @@ func (FD *WavReader) convert32Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 	}
 }
 
-func (FD *WavReader) convert64Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64) {
+func (FD *WavReader) convert64Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
 	const bytesPerSample = 8
 	step := bytesPerSample * FD.NumChannels
-
+	start := uintptr(dataPtr)
 	for c := 0; c < FD.NumChannels; c++ {
 		chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(c*bytesPerSample))
 		channel := samples[c]
 
 		for s := 0; s < numSamples; s++ {
-			val := *(*float64)(chanPtr)
-			converted := val
-			if abs := math.Abs(converted); abs > *rawPeak {
-				*rawPeak = abs
+			offset := uintptr(chanPtr) - start
+			if int(offset)+8 > lenmyBytes {
+				return
 			}
-			channel[s] = converted
+			if FD.AudioFormat == IEEE_FLOAT || FD.AudioFormat == INTERNAL_DOUBLE {
+				val := math.Float64frombits(FD.ByteOrder.Uint64((*[8]byte)(chanPtr)[:]))
+				channel[s] = val
+			} else {
+				// Mimic C#: Return 0 for 64-bit PCM (unsupported)
+				channel[s] = 0
+			}
 			chanPtr = unsafe.Pointer(uintptr(chanPtr) + uintptr(step))
 		}
 	}
 }
 
-// Byte Converter
-// functionName:="ConvertBytesToFloat64"
-// Calculate the expected number of samples from the input buffer NB we are talking frame samples here
-// copy channels as a minor optimization
-func (FD *WavReader) ConvertBytesToFloat64Old(myBytes []byte) ([][]float64, error) {
-
-	numChannels := FD.NumChannels
-	numSamples := uint32(len(myBytes) / ((FD.BitDepth / 8) * (numChannels)))
-
-	byteReader := bytes.NewReader(myBytes)
-
-	samples := make([][]float64, numChannels)
-	rawPeak := 0.0
-	for s := range samples {
-		samples[s] = make([]float64, numSamples)
-	}
-
-	var index int = 0
-	absSample := 0.0
-	//println("Expected number of samples: ", numSamples, len(samples[0]))
-	for s := uint32(0); s < numSamples; s++ {
-		for c := 0; c < numChannels; c++ {
-			switch FD.BitDepth {
-			case 8:
-
-				binary.Read(byteReader, binary.LittleEndian, &samplebyte)
-				// 8-bit PCM uses unsigned bytes
-				samples[c][s] = float64(samplebyte-128) * scale8Bit
-			case 16:
-				// index pos in array is ( (current sample number * channels) + current channel number) * number of bytes in sample
-				index = ((int(s) * numChannels) + c) * 2
-
-				if FD.LittleEndian {
-					sampleINT16 = (int16(myBytes[index+1]) << 8) | int16(myBytes[index])
-				} else {
-					//big endian
-					sampleINT16 = (int16(myBytes[index]) << 8) | int16(myBytes[index+1])
-				}
-
-				samples[c][s] = float64(sampleINT16) * scale16Bit
-
-			case 24:
-				// index pos in array is ( (current sample number * channels) + current channel number) * number of bytes in sample
-				index = ((int(s) * numChannels) + c) * 3
-				if FD.LittleEndian {
-					sampleINT32 = int32(int8(myBytes[index+2]))<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index])
-				} else {
-					// big endian
-					//sampleINT32 = int32(myBytes[index])<<16 | int32(myBytes[index+1])<<8 | int32(myBytes[index+2])
-					// Big-endian: [MSB][Mid][LSB]
-					raw := (int32(myBytes[index]) << 24) |
-						(int32(myBytes[index+1]) << 16) |
-						(int32(myBytes[index+2]) << 8)
-					sampleINT32 = raw >> 8 // Sign-extend
-				}
-				samples[c][s] = float64(sampleINT32) * scale24Bit
-			case 32:
-				if FD.AudioFormat == PCM {
-					binary.Read(byteReader, binary.LittleEndian, &sampleINT32)
-					samples[c][s] = float64(sampleINT32) * scale32Bit
-				} else {
-
-					// Read 4 bytes and interpret as an IEEE 754 float32
-					binary.Read(byteReader, binary.LittleEndian, &sampleFLOAT32)
-					samples[c][s] = float64(sampleFLOAT32)
-				}
-			case 64:
-
-				if (FD.AudioFormat == IEEE_FLOAT) || (FD.AudioFormat == INTERNAL_DOUBLE) {
-
-					binary.Read(byteReader, binary.LittleEndian, &sampleFLOAT64)
-
-				} else {
-					// throw new Exception("64-bit PCM not handled");
-					sampleFLOAT64 = 0
-				}
-				samples[c][s] = sampleFLOAT64
-			}
-			absSample = math.Abs(samples[c][s])
-			if absSample > rawPeak {
-				rawPeak = absSample
-			}
-		}
-	}
-	if rawPeak > FD.RawPeak {
-		FD.RawPeak = rawPeak
-	}
-
-	return samples, nil
-}
-
-func (FD *WavReader) DecodeInput(
-	DecodedSamplesChannel chan [][]float64,
-) error {
+func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	functionName := "DecodeInput"
 	MsgHeader := packageName + ":" + functionName + ": "
 	var TotalBytes int64
 	var TotalFrames int64
 
-	//maxAhead := 0.0
-
 	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
-	processingBufferSize := FD.SampleRate * (bytesPerFrame / 8)
-	readBufferSize := 8192
-
-	// Align buffer sizes with frame boundaries
+	if bytesPerFrame == 0 {
+		return fmt.Errorf("invalid bytesPerFrame (BitDepth=%d)", FD.BitDepth)
+	}
+	targetFrames := FD.SampleRate / 10
+	targetBytes := targetFrames * bytesPerFrame
+	processingBufferSize := targetBytes * 3
 	processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
 	if processingBufferSize < bytesPerFrame {
 		processingBufferSize = bytesPerFrame
 	}
 
-	if FD.DebugFunc != nil {
-		FD.debug(fmt.Sprintf("Starting decode with processing buffer: %d bytes (%d frames)",
-			processingBufferSize, processingBufferSize/bytesPerFrame))
-	}
-
-	// Use buffered reader but manage it carefully
-	bufferedInput := bufio.NewReaderSize(FD.Input, readBufferSize)
+	bufferedInput := bufio.NewReaderSize(FD.Input, 8192)
 	processingBuffer := make([]byte, processingBufferSize)
 	filledBytes := 0
-
+	maxDataSize := int(FD.Size)
+	if FD.IgnoreDataLength {
+		maxDataSize = 0
+	}
 	eofReceived := false
-
+	//msgcounter := 0
 	for !eofReceived {
-		// 1. Check for buffered data first, even after EOF
+
+		// Check for actual EOF without blocking
+		_, err := bufferedInput.Peek(1)
+		if err == io.EOF {
+			eofReceived = true
+			FD.debug(MsgHeader + "EOF detected with " + strconv.Itoa(bufferedInput.Buffered()) + " bytes remaining")
+		}
+		// Read data into processing buffer
 		if bufferedInput.Buffered() > 0 || !eofReceived {
-			// Read directly into processing buffer space
-			copyStart := filledBytes
-			copyEnd := copyStart + min(bufferedInput.Buffered(), processingBufferSize-filledBytes)
-
-			// Directly read into processing buffer to avoid copies
-			n, _ := bufferedInput.Read(processingBuffer[copyStart:copyEnd])
+			maxRead := processingBufferSize - filledBytes
+			n, _ := bufferedInput.Read(processingBuffer[filledBytes : filledBytes+maxRead])
 			filledBytes += n
-
 		}
 
-		// 2. Handle EOF detection
-
-		if !eofReceived {
-			// Check for actual EOF without blocking
-			_, err := bufferedInput.Peek(1)
-			if err == io.EOF {
+		// EOF Detection
+		if !eofReceived && maxDataSize > 0 {
+			totalAvailable := TotalBytes + int64(filledBytes) + int64(bufferedInput.Buffered())
+			// For PCM we do not need to worry about datasize as we will hit EOF
+			// For Wav it is possible that we want to ignore the datasize for very long files
+			// e.g radio broadcasts. It is assumed that this is picked up in initialisation through Size = max(int)
+			if totalAvailable >= int64(maxDataSize) && !FD.IgnoreDataLength {
 				eofReceived = true
-				FD.debug(MsgHeader + "EOF detected with " + strconv.Itoa(bufferedInput.Buffered()) + " bytes remaining")
+				excessBytes := totalAvailable - int64(maxDataSize)
+
+				// Trim from buffer
+				bufferExcess := min(excessBytes, int64(bufferedInput.Buffered()))
+				bufferedInput.Discard(int(bufferExcess))
+
+				// Adjust filledBytes if needed
+				filledExcess := excessBytes - bufferExcess
+				if filledExcess > 0 {
+					filledBytes -= int(filledExcess)
+					if filledBytes < 0 {
+						filledBytes = 0
+					}
+				}
 			}
 		}
 
-		// 3. Process filled buffer
-		if filledBytes >= bytesPerFrame || (eofReceived && filledBytes > 0) {
-			// Calculate complete frames available
+		// Process data
+		if filledBytes >= targetBytes || (eofReceived && filledBytes > 0) {
+			// Processable bytes is the number of bytes that can be processed in a single frame and needs to be trimmed to a bytes per frame size
 			processableBytes := (filledBytes / bytesPerFrame) * bytesPerFrame
 			remainingBytes := filledBytes - processableBytes
 
 			if processableBytes > 0 {
-				// Convert and send complete frames
-				mySamples, convertErr := FD.ConvertBytesToFloat64(processingBuffer[:processableBytes])
-				if convertErr != nil {
-					return fmt.Errorf("%s: conversion error: %w", functionName, convertErr)
+				samples, err := FD.ConvertBytesToFloat64(processingBuffer[:processableBytes])
+				if err != nil {
+					return fmt.Errorf("%s: conversion error: %w", functionName, err)
 				}
-
-				framesProcessed := int64(len(mySamples[0]))
-				TotalFrames += framesProcessed
+				DecodedSamplesChannel <- samples
 				TotalBytes += int64(processableBytes)
+				TotalFrames += int64(len(samples[0]))
 
-				DecodedSamplesChannel <- mySamples
-
-				// Preserve remaining bytes
+				// Preserve remaining bytes safely
 				if remainingBytes > 0 {
-					copy(processingBuffer, processingBuffer[processableBytes:filledBytes])
+					copy(
+						processingBuffer[:remainingBytes],
+						processingBuffer[processableBytes:processableBytes+remainingBytes],
+					)
 				}
 				filledBytes = remainingBytes
+			} else if eofReceived {
+				filledBytes = 0 // Discard partial frame
 			}
 		}
-
-		// 5. Final exit condition
-		/*
-			if eofReceived && bufferedInput.Buffered() == 0 && filledBytes == 0 {
-				break
-			}
-		*/
-		// Replace the final exit condition:
-		if eofReceived && (FD.IgnoreDataLength || (bufferedInput.Buffered() == 0 && filledBytes == 0)) {
+		//msgcounter++
+		//if msgcounter%100 == 0 {
+		//	FD.debug(fmt.Sprintf("Decode ongoing. filled Bytes + buffered: %d, buffered %d, TotalBytes %d, %d Expected Size, EOF %t", filledBytes+bufferedInput.Buffered(), bufferedInput.Buffered(), TotalBytes, FD.Size, eofReceived))
+		//}
+		// Exit condition
+		if eofReceived && (bufferedInput.Buffered() == 0 && filledBytes == 0) {
 			break
 		}
 	}
 
-	if FD.DebugFunc != nil {
-		FD.DebugFunc(MsgHeader + fmt.Sprintf("Decode complete. Total frames: %d", TotalFrames))
-	}
+	FD.debug(MsgHeader + fmt.Sprintf("Decoded %d frames", TotalFrames))
 	return nil
 }
 
@@ -673,136 +711,6 @@ func (FD *WavReader) DecodeInputBackPressure(
 	return nil
 }
 
-// Function should resume reading the input stream and pass the resulting samples to the output Channel
-
-func (FD *WavReader) DecodeInputOld(DecodedSamplesChannel chan [][]float64) error {
-	functionName := "DecodeInput"
-	start := time.Now()
-	var TotalBytes int64
-	var TotalSamples int64
-	TotalBytes = 0
-	TotalSamples = 0                                                             //1 channel
-	processingBufferSize := (FD.NumChannels * FD.SampleRate) * (FD.BitDepth / 8) // one second
-	processingBufferSize = processingBufferSize / 6
-
-	FD.debug(fmt.Sprintf("Starting decode at position: %d, expected data size: %d", FD.ReaderCursor, FD.Size))
-	// Smaller buffer for accumulating data
-	// No need to Flush the processing buffer as we are re-using and controlling the read cursor
-	// reading data from the input buffer
-	readBufferSize := 1200
-	//readBufferSize := 4096 // Tested vs StdIn via piped process (flac | this process ) and anything too big slows to a crawl.
-	//readBufferSize = 8192
-
-	if readBufferSize > processingBufferSize { //We don't want the read buffer to be bigger than the processing buffer
-		readBufferSize = processingBufferSize
-	}
-	readBuffer := make([]byte, readBufferSize)
-	processingBuffer := make([]byte, processingBufferSize)
-	filledBytes := 0
-
-	rowcounter := 0
-	// for throttling
-	// Get audio specs once
-	samplesPerSecond := float64(FD.SampleRate) // * FD.NumChannels)
-	// want to be under 2.0 s ahead
-	throttleThreshold := 1.8 // seconds
-	needThrottle := true
-
-	EOF := false
-	for {
-		// Read into the read buffer
-		n, err := FD.Input.Read(readBuffer[:readBufferSize])
-
-		if err != nil {
-			if err != io.EOF {
-				ErrorText := packageName + ":" + functionName + " Error reading: " + err.Error()
-				return errors.New(ErrorText)
-			}
-			// EOF reached
-			FD.debug(fmt.Sprintf(packageName + ":" + functionName + " EOF reached"))
-			EOF = true
-
-		}
-		FD.ReaderCursor += int(n)
-		// Check if enough space in the processing buffer
-		if filledBytes+n > processingBufferSize {
-
-			// copy as much as we can
-			readCursor := (processingBufferSize - filledBytes)
-			copy(processingBuffer[filledBytes:], readBuffer[:readCursor])
-			// are these the bytes you are looking for ?
-			filledBytes += readCursor
-
-			// convert the bytes to Samples of the correct bitDepth
-
-			mySamples, err := FD.ConvertBytesToFloat64(processingBuffer[:filledBytes])
-			if err != nil {
-
-				ErrorText := packageName + ":" + functionName + "Error Decoding Bytes: " + err.Error()
-				return errors.New(ErrorText)
-
-			}
-			TotalSamples += int64(len(mySamples[0]))
-			DecodedSamplesChannel <- mySamples
-			// THROTTLE LOGIC
-			if needThrottle {
-				expectedTime := float64(TotalSamples) / samplesPerSecond
-				elapsedTime := time.Since(start).Seconds()
-				timeAhead := expectedTime - elapsedTime
-
-				if timeAhead > throttleThreshold {
-					sleepDuration := time.Duration((timeAhead - throttleThreshold) * float64(time.Second))
-
-					//FD.debug(fmt.Sprintf("Throttling: %.2fs ahead (threshold %.2fs), sleeping %.2fs",
-					//		timeAhead, throttleThreshold, sleepDuration.Seconds()))
-
-					time.Sleep(sleepDuration)
-
-				}
-			}
-
-			TotalBytes += int64(filledBytes)
-			filledBytes = 0
-
-			// Check for remaining data in the read buffer (if not EOF)
-			if n > 0 {
-				copy(processingBuffer, readBuffer[readCursor:n]) // Move remaining data
-				filledBytes += n - readCursor
-			}
-
-		} else { //
-			copy(processingBuffer[filledBytes:], readBuffer[:n])
-			filledBytes += n
-		}
-
-		rowcounter++
-		if EOF {
-			// we may have some data left in the processing buffer!
-			//fmt.Println("Bytes read:", n, ": Read Buffer Size:", len(readBuffer), ":fill bytes:", filledBytes)
-			if filledBytes > 0 {
-
-				mySamples, err := FD.ConvertBytesToFloat64(processingBuffer[:filledBytes])
-				if err != nil {
-					ErrorText := packageName + ":" + functionName + "Error Decoding Bytes: " + err.Error()
-					return errors.New(ErrorText)
-
-				}
-				TotalSamples += int64(len(mySamples[0]))
-				DecodedSamplesChannel <- mySamples
-
-				TotalBytes += int64(filledBytes)
-				filledBytes = 0
-
-			}
-			break
-		}
-	}
-	FD.TotalSamples = TotalSamples
-	elapsedTime := time.Since(start).Milliseconds()
-	FD.debug(fmt.Sprintf(packageName+":"+functionName+"Expected Bytes: %v, Tracked bytes: %v, Total bytes read: %v Total samples read: %v Elapsed time (ms): %v ", FD.Size, FD.ReaderCursor, TotalBytes, TotalSamples, elapsedTime))
-	return nil
-}
-
 // **************Header as per old Inguz c# library************************
 
 type WaveFormatEx struct {
@@ -810,8 +718,9 @@ type WaveFormatEx struct {
 }
 
 var (
-	waveFormatExPCM                      = NewWaveFormatExString("1f0e8ffb-9db2-4f16-a2ef-47481f5dc9e5")
-	waveFormatExIEEEFloat                = NewWaveFormatExString("d478b09e-bcb9-4038-afe1-def76ec94512")
+	waveFormatExPCM = NewWaveFormatExString("1f0e8ffb-9db2-4f16-a2ef-47481f5dc9e5")
+	//waveFormatExIEEEFloat                = NewWaveFormatExString("d478b09e-bcb9-4038-afe1-def76ec94512")
+	waveFormatExIEEEFloat                = NewWaveFormatExString("00000003-0000-0010-8000-00AA00389B71")
 	AMBISONIC_B_FORMAT_PCMPCMguid        = NewWaveFormatExString("e8f32218-3fc1-4361-9f41-abf9b3b72260")
 	AMBISONIC_B_FORMAT_IEEE_FLOATPCMguid = NewWaveFormatExString("00000003-0721-11d3-8644-C8C1CA000000")
 )
@@ -843,7 +752,8 @@ func NewWaveFormatExBytes(guid []byte) WaveFormatEx {
 }
 
 func (wf *WaveFormatEx) Equals(other *WaveFormatEx) bool {
-	return wf.GUID == other.GUID
+	//return wf.GUID == other.GUID
+	return bytes.Equal(wf.GUID[:], other.GUID[:]) // Compare raw bytes, not structs
 }
 
 func (wf *WaveFormatEx) GetHashCode() int {
@@ -918,17 +828,6 @@ func (w *WaveFile) readCharsFromInput(myReader io.Reader, count int) (string, er
 	return string(buffer), nil
 }
 
-func (w *WaveFile) readInt32FromInput(myReader io.Reader) (int32, error) {
-	buf := bufferPool4.Get().([]byte)
-	defer bufferPool4.Put(buf)
-
-	if _, err := io.ReadFull(myReader, buf); err != nil {
-		return 0, err
-	}
-	w.pos += 4
-	return int32(binary.LittleEndian.Uint32(buf)), nil
-}
-
 func (w *WaveFile) readUInt32FromInput(myReader io.Reader) (uint32, error) {
 	buf := bufferPool4.Get().([]byte)
 	defer bufferPool4.Put(buf)
@@ -937,6 +836,9 @@ func (w *WaveFile) readUInt32FromInput(myReader io.Reader) (uint32, error) {
 		return 0, err
 	}
 	w.pos += 4
+	if w.bigEndian {
+		return binary.BigEndian.Uint32(buf), nil
+	}
 	return binary.LittleEndian.Uint32(buf), nil
 }
 
@@ -948,7 +850,43 @@ func (w *WaveFile) readUInt16FromInput(myReader io.Reader) (uint16, error) {
 		return 0, err
 	}
 	w.pos += 2
+	if w.bigEndian {
+		return binary.BigEndian.Uint16(buf), nil
+	}
 	return binary.LittleEndian.Uint16(buf), nil
+}
+
+func (w *WaveFile) readInt32FromInput(myReader io.Reader) (int32, error) {
+	buf := bufferPool4.Get().([]byte)
+	defer bufferPool4.Put(buf)
+
+	if _, err := io.ReadFull(myReader, buf); err != nil {
+		return 0, err
+	}
+	w.pos += 4
+	if w.bigEndian {
+		return int32(binary.BigEndian.Uint32(buf)), nil
+	}
+	return int32(binary.LittleEndian.Uint32(buf)), nil
+}
+func decodeIEEEExtended(b []byte) (float64, error) {
+
+	commonRates := map[string]float64{
+		"\x40\x0E\xAC\x44\x00\x00\x00\x00\x00\x00": 44100.0,
+		"\x40\x0E\xBB\x80\x00\x00\x00\x00\x00\x00": 48000.0,
+		"\x40\x0F\x57\x20\x00\x00\x00\x00\x00\x00": 88200.0,
+		"\x40\x0F\x5E\x00\x00\x00\x00\x00\x00\x00": 96000.0,
+		"\x40\x10\xAE\x40\x00\x00\x00\x00\x00\x00": 176400.0,
+		"\x40\x10\xBC\x00\x00\x00\x00\x00\x00\x00": 192000.0,
+	}
+
+	// Convert byte slice to string key for comparison
+	key := string(b)
+	if rate, found := commonRates[key]; found {
+		return rate, nil
+	}
+
+	return 0, fmt.Errorf("unsupported or unrecognized 10-byte IEEE extended float pattern")
 }
 
 // Read Wav File Header
@@ -967,17 +905,18 @@ func (fd *WavReader) DecodeWavHeader() error {
 		return err
 	}
 	w.riff = string(header[:4])
-	fileLen := binary.LittleEndian.Uint32(header[4:8])
-	w.wave = string(header[8:12])
-	w.pos = 12
-	/*
-		hdr, err := w.readCharsFromInput(fd.Input, 4)
-		if err != nil {
-			return err
-		}
 
-		w.riff = hdr
-	*/
+	w.wave = string(header[8:12])
+	// Parse file length with correct endianness
+	if w.wave == "AIFF" {
+		w.bigEndian = true
+		w.length = binary.BigEndian.Uint32(header[4:8]) // AIFF uses big-endian
+	} else {
+		w.length = binary.LittleEndian.Uint32(header[4:8]) // WAV uses little-endian
+	}
+
+	w.pos = 12 // Advance position
+
 	if w.riff != "RIFF" && w.riff != "FORM" {
 		if len(w.riff) == 0 {
 			return errors.New(packageName + functionName + ": file could not be read: no data")
@@ -989,35 +928,10 @@ func (fd *WavReader) DecodeWavHeader() error {
 		return fmt.Errorf(packageName+functionName+": file is not WAV: no 'RIFF' tag found, instead '%s' ", x)
 	}
 
-	// File length
-	/*fileLen, err := w.readInt32FromInput(fd.Input)
-
-	if err != nil {
-		return err
-	}*/
-	w.length = uint32(fileLen)
-
-	// Read Wave
-	/*
-		wave, err := w.readCharsFromInput(fd.Input, 4)
-		if err != nil {
-			return err
-		}
-
-		w.wave = wave
-	*/
-	// end of optimise
-
 	if w.wave != "WAVE" && w.wave != "AIFF" {
 		return fmt.Errorf(packageName+functionName+": file is not WAV: no 'WAVE' tag found, instead %s", w.wave)
 	}
-	if w.wave == "AIFF" {
-		// The whole file is big-endian, including lengths in the header
-		w.bigEndian = true
-		fileLenBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(fileLenBytes, uint32(fileLen))
-		w.length = binary.BigEndian.Uint32(fileLenBytes)
-	}
+
 	// Read Format
 	w.format, err = w.readCharsFromInput(fd.Input, 4)
 
@@ -1030,20 +944,21 @@ func (fd *WavReader) DecodeWavHeader() error {
 		if err != nil {
 			return err
 		}
-		if w.bigEndian {
-			chunkSizeBytes := make([]byte, 4)
-			binary.BigEndian.PutUint32(chunkSizeBytes, uint32(chunkSize))
-			chunkSize = int32(binary.BigEndian.Uint32(chunkSizeBytes))
-		}
+		//if w.bigEndian {
+		//	chunkSizeBytes := make([]byte, 4)
+		//	binary.BigEndian.PutUint32(chunkSizeBytes, uint32(chunkSize))
+		//	chunkSize = int32(binary.BigEndian.Uint32(chunkSizeBytes))
+		//	}
 
 		if w.dataOffset+int64(chunkSize) > int64(w.length) {
 			return errors.New(packageName + functionName + ": file could not be read: invalid 'fmt' chunk size")
 		}
 
-		//_, err = w.readBytesFromInput(fd.Input, int(chunkSize))
+		_, err = w.readBytesFromInput(fd.Input, int(chunkSize))
 		// Skip chunkSize bytes without buffering
-		_, err = io.CopyN(io.Discard, fd.Input, int64(chunkSize))
-		w.pos += int64(chunkSize) // Update position tracking if needed
+		//_, err = io.CopyN(io.Discard, fd.Input, int64(chunkSize))
+
+		//w.pos += int64(chunkSize) // Update position tracking if needed
 
 		if err != nil {
 			return err
@@ -1126,6 +1041,9 @@ func (fd *WavReader) DecodeWavHeader() error {
 					} else if w.formatEx == waveFormatExIEEEFloat {
 						w.audioFormat = IEEE_FLOAT
 					}
+					if w.formatEx == AMBISONIC_B_FORMAT_PCMPCMguid || w.formatEx == AMBISONIC_B_FORMAT_IEEE_FLOATPCMguid {
+						w.bigEndian = true // Ambisonic B-format uses big-endian PCM
+					}
 				}
 				// Read and discard the rest of the 'fmt' structure
 				_, err := w.readBytesFromInput(fd.Input, int(w.size-skip))
@@ -1169,17 +1087,12 @@ func (fd *WavReader) DecodeWavHeader() error {
 		if err != nil {
 			return err
 		}
-		if ext[0] == 64 && ext[1] == 14 && ext[2] == 172 && ext[3] == 68 {
-			w.sampleRate = 44100
-		} else if ext[0] == 64 && ext[1] == 14 && ext[2] == 187 && ext[3] == 128 {
-			w.sampleRate = 48000
-		} else if ext[0] == 64 && ext[1] == 15 && ext[2] == 187 && ext[3] == 128 {
-			w.sampleRate = 96000
-		} else if ext[0] == 64 && ext[1] == 16 && ext[2] == 187 && ext[3] == 128 {
-			w.sampleRate = 192000
-		} else {
-			return errors.New(packageName + functionName + ": file could not be read: don't know how to interpret sample rate")
+
+		sampleRateFloat, err := decodeIEEEExtended(ext) // You'll need to implement decodeIEEEExtended
+		if err != nil {
+			return errors.New(packageName + functionName + ": file could not be read: failed to decode IEEE extended sample rate: " + err.Error())
 		}
+		w.sampleRate = uint32(sampleRateFloat) // Convert float to uint32 for your struct
 
 		w.blockAlign = uint16((w.numChannels * w.bitsPerSample) / 8)
 		w.byteRate = uint32(w.blockAlign) * w.sampleRate
@@ -1208,14 +1121,17 @@ func (fd *WavReader) DecodeWavHeader() error {
 		if err != nil {
 			return err
 		}
-		if w.dataOffset+int64(miscSize) > int64(w.length) {
+		if w.pos+int64(miscSize) > int64(w.length) {
 			return errors.New(packageName + functionName + ": file could not be read: invalid data chunk size")
 		}
-		if w.bigEndian {
-			miscSizeBytes := make([]byte, 4)
-			binary.BigEndian.PutUint32(miscSizeBytes, uint32(miscSize))
-			miscSize = int32(binary.BigEndian.Uint32(miscSizeBytes))
-		}
+		//if w.dataOffset+int64(miscSize) > int64(w.length) {
+		//	return errors.New(packageName + functionName + ": file could not be read: invalid data chunk size")
+		//}
+		//if w.bigEndian {
+		//	miscSizeBytes := make([]byte, 4)
+		//	binary.BigEndian.PutUint32(miscSizeBytes, uint32(miscSize))
+		//	miscSize = int32(binary.BigEndian.Uint32(miscSizeBytes))
+		//}
 
 		// Skip chunkSize bytes without buffering
 		_, err = io.CopyN(io.Discard, fd.Input, int64(miscSize))
@@ -1231,16 +1147,49 @@ func (fd *WavReader) DecodeWavHeader() error {
 		}
 		//	w.dataOffset += 4
 	}
-	w.dataSize, err = w.readUInt32FromInput(fd.Input)
-	if err != nil {
-		return err
+	if w.data == "data" {
+		w.dataSize, err = w.readUInt32FromInput(fd.Input)
+		if err != nil {
+			return err
+		}
+	} else if w.data == "SSND" {
+		// AIFF: Read SSND chunk size (big-endian)
+		w.dataSize, err = w.readUInt32FromInput(fd.Input)
+		if err != nil {
+			return err
+		}
+
+		// Read offset (4 bytes) and blockSize (4 bytes)
+		offsetBytes, err := w.readBytesFromInput(fd.Input, 4)
+		if err != nil {
+			return err
+		}
+		offset := binary.BigEndian.Uint32(offsetBytes)
+
+		blockSizeBytes, err := w.readBytesFromInput(fd.Input, 4)
+		if err != nil {
+			return err
+		}
+		_ = binary.BigEndian.Uint32(blockSizeBytes) // Often 0
+
+		// Skip the offset bytes (critical!)
+		_, err = w.readBytesFromInput(fd.Input, int(offset))
+		if err != nil {
+			return err
+		}
+
+		// Adjust dataSize to exclude header (8 bytes) + offset
+		w.dataSize = w.dataSize - 8 - offset
+
+		// For AIFF, read until EOF/dataSize
+
 	}
 	// Convert dataSize to host order if BigEndian
-	if w.bigEndian {
-		dataSizeBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(dataSizeBytes, w.dataSize)
-		w.dataSize = binary.BigEndian.Uint32(dataSizeBytes)
-	}
+	//if w.bigEndian {
+	//	dataSizeBytes := make([]byte, 4)
+	//	binary.BigEndian.PutUint32(dataSizeBytes, w.dataSize)
+	//	w.dataSize = binary.BigEndian.Uint32(dataSizeBytes)
+	//}
 
 	// See if we can read this
 	if w.numChannels > 0 {
@@ -1262,10 +1211,14 @@ func (fd *WavReader) DecodeWavHeader() error {
 			}
 		}
 	}
-
+	// If dataSize is 0, it means the file size is unknown so let's default to the max
+	if w.dataSize == 0 {
+		w.dataSize = maxDataSize
+	}
 	if w.ok {
-		w.max = uint32((uint32(w.dataSize) / (uint32(w.bitsPerSample / 8))) / uint32(w.numChannels))
-		if w.dataSize == 4294967292 {
+		w.max = uint32(float64(w.dataSize) / (float64(w.bitsPerSample) / 8) / float64(w.numChannels))
+		//w.max = uint32((uint32(w.dataSize) / (uint32(w.bitsPerSample / 8))) / uint32(w.numChannels))
+		if w.dataSize == maxDataSize {
 			fmt.Println(packageName + functionName + ": Wave file: unknown size from header")
 			w.max = math.MaxUint32
 		}
@@ -1281,6 +1234,7 @@ func (fd *WavReader) DecodeWavHeader() error {
 	fd.NumChannels = int(w.numChannels)
 	fd.BitDepth = int(w.bitsPerSample)
 	fd.SampleRate = int(w.sampleRate)
+	fd.Length = w.length
 	if w.bigEndian {
 		fd.LittleEndian = false
 		fd.ByteOrder = binary.BigEndian
@@ -1292,7 +1246,7 @@ func (fd *WavReader) DecodeWavHeader() error {
 	fd.ReaderCursor = int(w.pos)
 	fd.AudioFormat = w.audioFormat
 	//fd.Size = w.length
-	if w.dataSize == 4294967292 || w.dataSize == 0xFFFFFFFF {
+	if w.dataSize == maxDataSize { //|| w.dataSize == 0xFFFFFFFF {
 		w.max = math.MaxUint32     // Treat as "unknown length"
 		fd.IgnoreDataLength = true // Add this flag to your WavReader struct
 	}

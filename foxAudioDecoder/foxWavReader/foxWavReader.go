@@ -158,7 +158,7 @@ var sampleINT32 int32
 var sampleFLOAT32 float32
 var sampleFLOAT64 float64
 
-const maxDataSize uint32 = 4294967292
+const maxDataSize uint32 = math.MaxUint32
 
 func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) {
 	numChannels := FD.NumChannels

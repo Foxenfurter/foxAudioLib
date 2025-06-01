@@ -55,13 +55,19 @@ using information from ther FoxEncoder Struct
 */
 func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
 	var dataSize, fileSize int64
+	maxValidSize := uint64(math.MaxUint32) - 36 // Pre-calculate max safe size
 
-	if we.Size != 0 {
+	switch {
+	case we.Size == 0: // Explicit unknown size
+		dataSize = math.MaxUint32
+		fileSize = math.MaxUint32
+
+	case we.Size > 0 && uint64(we.Size) <= maxValidSize: // Safe known size
 		dataSize = we.Size
 		fileSize = we.Size + 36
-	} else {
 
-		dataSize = math.MaxUint32 - 36 // Representing an unknown or unlimited size
+	default: // Size too large (>4GB) or invalid
+		dataSize = math.MaxUint32
 		fileSize = math.MaxUint32
 	}
 

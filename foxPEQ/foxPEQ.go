@@ -32,8 +32,9 @@ func NewPEQFilter(sampleRate int, lowestFrequency int) PEQFilter {
 	}
 
 	myPEQFilter := PEQFilter{
-		SampleRate:   sampleRate,
-		FilterLength: sampleRate / lowestFrequency,
+		SampleRate: sampleRate,
+
+		FilterLength: int(float64(2*sampleRate) / float64(lowestFrequency)),
 	}
 	return myPEQFilter
 }

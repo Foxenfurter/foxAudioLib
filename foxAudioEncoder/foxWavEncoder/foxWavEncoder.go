@@ -22,11 +22,20 @@ type FoxEncoder struct {
 	Size        int64
 	prng        *rand.Rand
 	ditherready bool
-	ditherState []float64 // Per-channel error feedback (for noise shaping)
-	ditherScale float64   // Precomputed dither amplitude
-	noiseCoeff  float64   // Noise shaping feedback coefficient
-	Peak        float64   // Peak value of the signal
+	ditherState []float64  // Per-channel error feedback (for noise shaping)
+	ditherScale float64    // Precomputed dither amplitude
+	noiseCoeff  float64    // Noise shaping feedback coefficient
+	Peak        float64    // Peak value of the signal
+	FormatType  FormatType // Add this field
 }
+
+type FormatType int
+
+const (
+	FormatNone  FormatType = 0 // Represents an uninitialized state
+	FormatPCM   FormatType = 1
+	FormatFloat FormatType = 2
+)
 
 const maxValue32Bit = 2147483647.0
 const minValue32Bit = -2147483648.0
@@ -45,6 +54,14 @@ func (we *FoxEncoder) InitDither() {
 	we.Peak = 0.0
 }
 
+func (we *FoxEncoder) SetFormatType(formatType FormatType) {
+	we.FormatType = formatType
+}
+
+func (we *FoxEncoder) GetFormatType() FormatType {
+	return we.FormatType
+}
+
 func (we *FoxEncoder) GetPeak() float64 {
 	return we.Peak
 }
@@ -54,51 +71,88 @@ EncodeHeader generates the WAV file header (RIFF format) as a byte slice
 using information from ther FoxEncoder Struct
 */
 func (we *FoxEncoder) EncodeHeader() ([]byte, error) {
-	var dataSize, fileSize int64
-	maxValidSize := uint64(math.MaxUint32) - 36 // Pre-calculate max safe size
+	// Calculate header sizes
+	var chunkSize, headerSize uint32
+	baseHeaderSize := uint32(44) // Correct standard header size for non-24-bit PCM
+
+	// Auto-detect format type if not set
+	if we.FormatType == FormatType(0) {
+		if we.BitDepth == 16 || we.BitDepth == 24 {
+			we.FormatType = FormatPCM
+		} else {
+			we.FormatType = FormatFloat
+		}
+	}
+	if we.BitDepth == 24 && we.FormatType == FormatPCM {
+		chunkSize = 18  // Special chunk size for 24-bit PCM
+		headerSize = 46 // Total header size for 24-bit PCM
+	} else {
+		chunkSize = 16
+		headerSize = baseHeaderSize
+	}
+	// Determine format tag based on detected type
+	formatTag := uint16(1) // PCM
+	if we.FormatType == FormatFloat {
+		formatTag = 3 // IEEE Float
+	}
+
+	// Calculate data size limits
+	maxValidSize := uint64(math.MaxUint32) - uint64(headerSize)
+	var dataSize, fileSize uint32
 
 	switch {
-	case we.Size == 0: // Explicit unknown size
+	case we.Size == 0: // Unknown size
 		dataSize = math.MaxUint32
 		fileSize = math.MaxUint32
-
-	case we.Size > 0 && uint64(we.Size) <= maxValidSize: // Safe known size
-		dataSize = we.Size
-		fileSize = we.Size + 36
-
-	default: // Size too large (>4GB) or invalid
+	case we.Size > 0 && uint64(we.Size) <= maxValidSize: // Valid size
+		dataSize = uint32(we.Size)
+		fileSize = uint32(we.Size) + headerSize
+	default: // Size too large
 		dataSize = math.MaxUint32
 		fileSize = math.MaxUint32
 	}
 
-	// Create a buffer to store the WAV header
+	// Create header buffer
 	headerBuffer := new(bytes.Buffer)
 
-	// Write WAV file header to the buffer
+	// Write RIFF header
 	headerBuffer.WriteString("RIFF")
-
-	binary.Write(headerBuffer, binary.LittleEndian, int32(fileSize))
+	binary.Write(headerBuffer, binary.LittleEndian, int32(fileSize-8)) // RIFF chunk size
 	headerBuffer.WriteString("WAVE")
 
-	// Write the format chunk
+	// Write format chunk
 	headerBuffer.WriteString("fmt ")
-	binary.Write(headerBuffer, binary.LittleEndian, int32(16))                                           // Size of the format chunk
-	binary.Write(headerBuffer, binary.LittleEndian, int16(1))                                            // Audio format (PCM)
-	binary.Write(headerBuffer, binary.LittleEndian, int16(we.NumChannels))                               // Number of channels
-	binary.Write(headerBuffer, binary.LittleEndian, int32(we.SampleRate))                                // Sample rate
-	binary.Write(headerBuffer, binary.LittleEndian, int32(we.SampleRate*we.NumChannels*(we.BitDepth/8))) // Byte rate
-	binary.Write(headerBuffer, binary.LittleEndian, int16(we.NumChannels*(we.BitDepth/8)))               // Block align
-	binary.Write(headerBuffer, binary.LittleEndian, int16(we.BitDepth))                                  // Bits per sample
+	binary.Write(headerBuffer, binary.LittleEndian, int32(chunkSize)) // Format chunk size
+	binary.Write(headerBuffer, binary.LittleEndian, formatTag)        // Audio format
+	binary.Write(headerBuffer, binary.LittleEndian, int16(we.NumChannels))
+	binary.Write(headerBuffer, binary.LittleEndian, int32(we.SampleRate))
 
-	// Write the data chunk header to the buffer
+	// Calculate and write byte rate
+	byteRate := uint32(we.SampleRate) * uint32(we.NumChannels) * uint32(we.BitDepth/8)
+	binary.Write(headerBuffer, binary.LittleEndian, int32(byteRate))
+
+	// Calculate and write block align
+	blockAlign := uint16(we.NumChannels) * uint16(we.BitDepth/8)
+	binary.Write(headerBuffer, binary.LittleEndian, int16(blockAlign))
+
+	binary.Write(headerBuffer, binary.LittleEndian, int16(we.BitDepth))
+
+	// Add extension for 24-bit PCM
+	if we.BitDepth == 24 && we.FormatType == FormatPCM {
+		headerBuffer.Write([]byte{0x00, 0x00}) // Extension size (0)
+	}
+
+	// Write data chunk header
 	headerBuffer.WriteString("data")
 	binary.Write(headerBuffer, binary.LittleEndian, int32(dataSize))
-	// Set dithered
-	we.InitDither()
-	//fmt.Println("foxWavEncoder: DataSize: ", uint32(dataSize))
+
+	// Initialize dither for PCM formats
+	if we.FormatType == FormatPCM {
+		we.InitDither()
+	}
+
 	return headerBuffer.Bytes(), nil
 }
-
 func (we *FoxEncoder) EncodeDataOriginal(buffer [][]float64) ([]byte, error) {
 	// Calculate the total number of samples across all channels
 	totalSamples := len(buffer[0]) // Assuming all channels have the same number of samples
@@ -180,149 +234,6 @@ func (we *FoxEncoder) convertTo32BitSample(sample float64) []byte {
 	}
 }
 
-func (we *FoxEncoder) encode16BitDithered(buffer []float64, encoded []byte) float64 {
-	const (
-		max            = 32768.0  // 2^15 (maximum positive 16-bit value)
-		min            = -32768.0 // Minimum 16-bit value
-		bytesPerSample = 2        // 16 bits = 2 bytes
-	)
-	invMax := 1.0 / max
-	currentPeak := 0.0
-
-	for i := 0; i < len(buffer); i++ {
-		sample := buffer[i]
-
-		// Track peak in this buffer
-		if abs := math.Abs(sample); abs > currentPeak {
-			currentPeak = abs
-		}
-
-		// Generate noise-shaped dither
-		prevError := we.ditherState[0] // Single channel state
-		ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
-		dithered := sample + ditherNoise - prevError
-
-		// Scale to 16-bit range and clamp
-		scaled := math.Round(dithered * max)
-		scaled = math.Max(min, math.Min(max-1, scaled))
-
-		// Quantize and compute error
-		quantized := scaled * invMax
-		error := dithered - quantized
-		we.ditherState[0] = error * we.noiseCoeff
-
-		// Write to output buffer (little-endian)
-		binary.LittleEndian.PutUint16(encoded[i*bytesPerSample:], uint16(int16(scaled)))
-	}
-
-	return currentPeak
-}
-
-func (we *FoxEncoder) encode24BitDithered(buffer []float64, encoded []byte) float64 {
-	const (
-		max            = 8388608.0  // 2^23 (maximum positive 24-bit value)
-		min            = -8388608.0 // Minimum 24-bit value
-		bytesPerSample = 3          // 24 bits = 3 bytes
-	)
-	invMax := 1.0 / max
-	currentPeak := 0.0
-
-	for i := 0; i < len(buffer); i++ {
-		sample := buffer[i]
-
-		// Track peak in this buffer
-		if abs := math.Abs(sample); abs > currentPeak {
-			currentPeak = abs
-		}
-
-		// Generate noise-shaped dither
-		prevError := we.ditherState[0]
-		ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
-		dithered := sample + ditherNoise - prevError
-
-		// Scale to 24-bit range and clamp
-		scaled := math.Round(dithered * max)
-		scaled = math.Max(min, math.Min(max-1, scaled))
-
-		// Quantize and compute error
-		quantized := scaled * invMax
-		error := dithered - quantized
-		we.ditherState[0] = error * we.noiseCoeff
-
-		// Write 24-bit (little-endian with masking)
-		pos := i * bytesPerSample
-		scaledInt := int32(scaled)
-		encoded[pos] = byte(scaledInt)
-		encoded[pos+1] = byte(scaledInt >> 8)
-		encoded[pos+2] = byte((scaledInt >> 16) & 0xFF) // Mask upper bits
-	}
-
-	return currentPeak
-}
-
-func (we *FoxEncoder) encode32BitDithered(buffer []float64, encoded []byte) float64 {
-	const (
-		max            = 2147483648.0 // 2^31 (maximum positive 32-bit value)
-		min            = -2147483648.0
-		bytesPerSample = 4 // 32 bits = 4 bytes
-	)
-	invMax := 1.0 / max
-	currentPeak := 0.0
-
-	for i := 0; i < len(buffer); i++ {
-		sample := buffer[i]
-
-		// Track peak in this buffer
-		if abs := math.Abs(sample); abs > currentPeak {
-			currentPeak = abs
-		}
-
-		// Generate noise-shaped dither
-		prevError := we.ditherState[0]
-		ditherNoise := (we.prng.Float64() + we.prng.Float64() - 1.0) * we.ditherScale
-		dithered := sample + ditherNoise - prevError
-
-		// Scale to 32-bit range and clamp
-		scaled := math.Round(dithered * max)
-		scaled = math.Max(min, math.Min(max-1, scaled))
-
-		// Quantize and compute error
-		quantized := scaled * invMax
-		error := dithered - quantized
-		we.ditherState[0] = error * we.noiseCoeff
-
-		// Write 32-bit (little-endian)
-		binary.LittleEndian.PutUint32(encoded[i*bytesPerSample:], uint32(int32(scaled)))
-	}
-
-	return currentPeak
-}
-
-func (we *FoxEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
-	totalSamples := len(buffer)
-	if !we.ditherready {
-		we.InitDither()
-	}
-	bytesPerSample := we.BitDepth / 8
-	encoded := make([]byte, totalSamples*bytesPerSample)
-	myPeak := 0.0
-
-	switch we.BitDepth {
-	case 16:
-		myPeak = we.encode16BitDithered(buffer, encoded)
-	case 24:
-		myPeak = we.encode24BitDithered(buffer, encoded)
-	case 32:
-		myPeak = we.encode32BitDithered(buffer, encoded)
-	default:
-		return nil, errors.New("unsupported bit depth")
-	}
-	if myPeak > we.Peak {
-		we.Peak = myPeak
-	}
-	return encoded, nil
-}
-
 // Encodes WAV and PCM data to 16, 24, or 32 bit with dithering
 func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 	totalSamples := len(buffer[0])
@@ -334,15 +245,58 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 	if len(buffer) != numChannels {
 		return nil, fmt.Errorf("channel count mismatch")
 	}
+	if we.FormatType == 0 {
+		if we.BitDepth == 16 || we.BitDepth == 24 {
+			we.FormatType = FormatPCM // Use constant (1)
+		} else {
+			we.FormatType = FormatFloat // Use constant (3)
+		}
+	}
 
 	bytesPerSample := we.BitDepth / 8
 	totalBytes := totalSamples * numChannels * bytesPerSample
 	encoded := make([]byte, totalBytes)
 	localpeak := we.Peak
 	var absval float64
-	switch we.BitDepth {
+
+	switch {
+	case we.FormatType == FormatFloat && we.BitDepth == 32:
+		// 32-bit float encoding
+		for i := 0; i < totalSamples; i++ {
+			basePos := i * numChannels * bytesPerSample
+			for ch := 0; ch < numChannels; ch++ {
+				pos := basePos + ch*bytesPerSample
+				sample := buffer[ch][i]
+				// Track peak without clipping
+				if abs := math.Abs(sample); abs > localpeak {
+					localpeak = abs
+				}
+				// Convert to float32 and write
+				val := float32(sample)
+				bits := math.Float32bits(val)
+				binary.LittleEndian.PutUint32(encoded[pos:], bits)
+			}
+		}
+
+	case we.FormatType == FormatFloat && we.BitDepth == 64:
+		// 64-bit float encoding
+		for i := 0; i < totalSamples; i++ {
+			basePos := i * numChannels * bytesPerSample
+			for ch := 0; ch < numChannels; ch++ {
+				pos := basePos + ch*bytesPerSample
+				sample := buffer[ch][i]
+				// Track peak without clipping
+				if abs := math.Abs(sample); abs > localpeak {
+					localpeak = abs
+				}
+				// Directly write float64
+				bits := math.Float64bits(sample)
+				binary.LittleEndian.PutUint64(encoded[pos:], bits)
+			}
+		}
+
 	// only generate dither for 16 bit
-	case 16:
+	case we.FormatType == FormatPCM && we.BitDepth == 16:
 		max := maxValue16Bit // 2^15 (not 32767!)
 		min := minValue16Bit
 		invMax := 1.0 / max
@@ -384,7 +338,7 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 			}
 		}
 
-	case 24:
+	case we.FormatType == FormatPCM && we.BitDepth == 24:
 		// 24 bit
 		for i := 0; i < totalSamples; i++ {
 			basePos := i * numChannels * bytesPerSample
@@ -409,7 +363,7 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 				encoded[pos+2] = byte((scaledInt >> 16) & 0xFF) // Mask upper bits
 			}
 		}
-	case 32:
+	case we.FormatType == FormatPCM && we.BitDepth == 32:
 		max := maxValue32Bit // 2^31 (not 2147483647!)
 		//min := minValue32Bit
 		//invMax := 1.0 / max
@@ -433,28 +387,9 @@ func (we *FoxEncoder) EncodeData(buffer [][]float64) ([]byte, error) {
 
 			}
 		}
-	case 64:
-
-		for i := 0; i < totalSamples; i++ {
-			basePos := i * numChannels * bytesPerSample
-			for ch := 0; ch < numChannels; ch++ {
-				//pos := (i*numChannels + ch) * bytesPerSample
-				pos := basePos + ch*bytesPerSample
-				//sample := math.Max(-1.0, math.Min(1.0, buffer[ch][i]))
-				sample := buffer[ch][i]
-				// get max level for reporting
-				absval = math.Abs(sample)
-				if absval > localpeak {
-					localpeak = absval
-				}
-
-				binary.LittleEndian.PutUint64(encoded[pos:], uint64(sample))
-
-			}
-		}
 
 	default:
-		return nil, errors.New("unsupported bit depth")
+		return nil, errors.New(fmt.Sprintf("unsupported format type %v and bit depth  %v", we.FormatType, we.BitDepth))
 	}
 	we.Peak = localpeak
 	return encoded, nil

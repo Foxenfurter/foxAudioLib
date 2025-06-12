@@ -12,6 +12,9 @@ import (
 	"os/exec"
 	"strconv"
 
+	"sync"
+
+	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 	"github.com/Foxenfurter/foxAudioLib/foxConvolver"
 	"github.com/Foxenfurter/foxAudioLib/foxPEQ"
 	"scientificgo.org/fft"
@@ -23,6 +26,7 @@ type Resampler struct {
 	FromSampleRate int
 	ToSampleRate   int
 	Quality        int
+	SOXPath        string
 	//streaming         bool
 	DebugOn     bool //enables debugging
 	DebugFunc   func(string)
@@ -61,11 +65,25 @@ func (myResampler *Resampler) warning(message string) {
 	}
 }
 
-// In case you want to use sox as an input.
-func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader, error) {
-	functionName := "ReadnResampleFirFile"
-	mySampleRate := strconv.Itoa(targetSampleRate)
-	cmd := exec.Command("sox", filePath, "-r", mySampleRate, "-t", "wav", "-q", "-")
+// Wrapper for sox, which takes the input file and resamples it using the highest quality available to Sox
+// the result is returned to a reader and then is decoded as a wav file via channels into a buffer
+// this code is faster and produces a better result than my attempts at an all go solution
+// Sox is readily available on lms and the location is picked up by the calling application
+func (myResampler *Resampler) ReadnResampleFile2Buffer(filePath string) ([][]float64, error) {
+	functionName := "ReadnResampleFile2Buffer"
+	mySampleRate := strconv.Itoa(myResampler.ToSampleRate)
+	//cmd := exec.Command(myResampler.SOXPath, filePath, "-r", mySampleRate, "-t", "wav", "-q", "-")
+	args := []string{
+		filePath,
+		"-b", "32",
+		"-e", "float",
+		"-t", "wav", // Explicitly set output format to WAV
+		"-", // Output to stdout
+		"rate", "-v", "-s", mySampleRate,
+	}
+
+	cmd := exec.Command(myResampler.SOXPath, args...)
+
 	// Create a bytes.Buffer to capture the output
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -76,12 +94,54 @@ func ReadnResampleFirFile(filePath string, targetSampleRate int) (*bytes.Reader,
 		ErrorText := packageName + ":" + functionName + " Error running sox command: " + err.Error()
 		return nil, errors.New(ErrorText)
 	}
-
 	// The output is now in the 'out' buffer.
 	// You can convert it to a bytes.Reader with bytes.NewReader()
 	myReader := bytes.NewReader(out.Bytes())
-	return myReader, nil
+	var myDecoder foxWavReader.WavReader
 
+	myDecoder.Input = myReader
+
+	err = myDecoder.DecodeWavHeader()
+	if err != nil {
+		panic(err)
+	}
+
+	var WG sync.WaitGroup
+	DecodedSamplesChannel := make(chan [][]float64, 2)
+	WG.Add(1)
+	go func() {
+		defer func() {
+			close(DecodedSamplesChannel)
+			WG.Done()
+		}()
+		myDecoder.DecodeInput(DecodedSamplesChannel)
+
+	}()
+
+	mySamples := make([][]float64, myDecoder.NumChannels)
+	WG.Add(1)
+	go func() {
+
+		defer func() {
+			WG.Done()
+		}()
+		var ResultCounter int
+
+		for decodedResult := range DecodedSamplesChannel {
+			// Discard decoded results
+			for i := int(0); i < len(decodedResult); i++ {
+				mySamples[i] = append(mySamples[i], decodedResult[i]...)
+			}
+
+			ResultCounter += len(decodedResult[0])
+
+		}
+	}()
+
+	WG.Wait()
+	myResampler.debug("ReadnResampleFile2Buffer: " + strconv.Itoa(len(mySamples[0])) + " samples read")
+
+	return mySamples, nil
 }
 
 func ResamplerDownsample(inputSamples []float64, fromSampleRate, toSampleRate int) ([]float64, error) {
@@ -189,7 +249,7 @@ func applyPassbandCompensation(samples []float64) []float64 {
 // whilst there is some ripple effect at the very top end, it is miniscule and this best tracks the origineal
 func ResampleUpsample(inputSamples []float64, fromSampleRate, toSampleRate, quality int) ([]float64, error) {
 	if fromSampleRate == toSampleRate {
-		return inputSamples, nil
+		//return inputSamples, nil
 	}
 
 	srcLength := len(inputSamples)
@@ -239,6 +299,20 @@ func ResampleUpsample(inputSamples []float64, fromSampleRate, toSampleRate, qual
 
 	// Apply droop compensation
 	return applyPassbandCompensation(samples), nil
+}
+
+// Helper functions
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Kaiser window 2 an older version - comment on accuracy
@@ -298,62 +372,42 @@ func ResampleUpsampleWorking(inputSamples []float64, fromSampleRate, toSampleRat
 }
 
 func designBandPassFIR(sampleRate float64) ([]float64, error) {
+
 	myPEQFilter := foxPEQ.NewPEQFilter(int(sampleRate), 15)
-	// we are double passing them to get a steeper filter
-	err := myPEQFilter.CalcBiquadFilter("lowpass", 22000, 1.8, 0.73, "Q")
-	if err != nil {
-		myErr := fmt.Errorf("Invalid filter definition , %s \n", err.Error())
-		return nil, myErr
-	}
-	err = myPEQFilter.CalcBiquadFilter("lowpass", 22000, 1.8, 0.73, "Q")
-	if err != nil {
-		myErr := fmt.Errorf("Invalid filter definition, %s \n", err.Error())
-		return nil, myErr
-	}
-	err = myPEQFilter.CalcBiquadFilter("highpass", 20, 0.25, 0.73, "Q")
-	if err != nil {
-		myErr := fmt.Errorf("Invalid filter definition, %s \n", err.Error())
-		return nil, myErr
-	}
-	err = myPEQFilter.CalcBiquadFilter("highpass", 20, 0.25, 0.73, "Q")
-	if err != nil {
-		myErr := fmt.Errorf("Invalid filter definition, %s \n", err.Error())
-		return nil, myErr
-	}
-	//	fmt.Printf("Number of filters created: %v\n", len(myPEQFilter.FilterCoefficients))
-	//	fmt.Printf("now generate impulses: \n")
-	myPEQFilter.GenerateFilterImpulse()
+	// Preserve full audio bandwidth + transition
+	Fp := 21000.0 // Pass-band = original Nyquist
+	Fs := 22050.0 // Stop-band start (1kHz transition)
+	attenuationdB := 80.0
+	kPhases := 1
+	beta := -1.0
+
+	myPEQFilter.Impulse = designLpf(Fp, Fs, sampleRate, attenuationdB, kPhases, beta)
 	return myPEQFilter.Impulse, nil
+
 }
 
-func bandpassLinearUpsample2x(input []float64, fs float64, myDebug func(string)) []float64 {
+func bandPassUpsampledSignal(input []float64, sampleRate float64, myDebug func(string)) []float64 {
 	// Step 1: Design band-pass filter
 	myDebug("Get band-pass filter...")
-	myBPFilter, err := designBandPassFIR(fs) // 121 taps for sharp roll-off
-	if err != nil {
-		return nil
-	}
-
-	// Step 2: Apply FIR filter
+	myPEQFilter := foxPEQ.NewPEQFilter(int(sampleRate), 15)
+	// we are double passing them to get a steeper filter
+	myPEQFilter.Impulse, _ = designBandPassFIR(sampleRate)
 	myDebug("Applying band-pass filter...")
-	myConvolver := foxConvolver.NewConvolver(myBPFilter)
-	//filtered := myConvolver.ConvolveFFT(input)
+	myConvolver := foxConvolver.NewConvolver(myPEQFilter.Impulse)
 	filtered := myConvolver.ConvolveFFT(input)
 
-	// Step 3: Linear upsample 2x
-	myDebug("Linear upsample 2x...")
-	upsampled := linearUpsample2x(filtered)
-
-	return upsampled
+	return filtered
 }
 
 func linearUpsample2x(input []float64) []float64 {
-	output := make([]float64, len(input)*2)
+	out := make([]float64, len(input)*2)
 	for i := 0; i < len(input)-1; i++ {
-		output[2*i] = input[i]
-		output[2*i+1] = 0.5*input[i] + 0.5*input[i+1] // Linear interpolation
+		out[2*i] = input[i]
+		out[2*i+1] = (input[i] + input[i+1]) * 0.5 // Linear interpolation
+
 	}
-	return output
+	out[len(out)-2] = input[len(input)-1] // Last sample
+	return out
 }
 
 // resample all input samples from fromSampleRate toSampleRate
@@ -386,25 +440,32 @@ func (myResampler *Resampler) Resample() error {
 			myResampler.debugLogged = true
 		}
 	}
+	IntermediateSampleRate := myResampler.FromSampleRate * 2
 	myChannelsLength := len(myResampler.InputSamples)
 	for c := 0; c < myChannelsLength; c++ {
 
 		// Various experiments, non-better than original code
 		if upsample {
 			//better for upsampling
-			if (myResampler.FromSampleRate == 44100 || myResampler.FromSampleRate == 48000) && myResampler.ToSampleRate > 48000 {
-				//myResampler.InputSamples[c] = linearUpsample2x(myResampler.InputSamples[c])
-				myResampler.InputSamples[c] = bandpassLinearUpsample2x(myResampler.InputSamples[c], float64(myResampler.FromSampleRate), myResampler.DebugFunc)
-				TempFromSampleRate := myResampler.FromSampleRate * 2
-				if TempFromSampleRate > myResampler.ToSampleRate {
-					myResampler.InputSamples[c], err = ResamplerDownsample(myResampler.InputSamples[c], TempFromSampleRate, myResampler.ToSampleRate)
+
+			if ((myResampler.FromSampleRate == 44100 || myResampler.FromSampleRate == 48000) && myResampler.ToSampleRate > 48000) ||
+				IntermediateSampleRate <= myResampler.ToSampleRate {
+				myResampler.InputSamples[c] = linearUpsample2x(myResampler.InputSamples[c])
+				if err != nil {
+					return err
+				}
+
+				if IntermediateSampleRate > myResampler.ToSampleRate {
+					myResampler.InputSamples[c], err = ResamplerDownsample(myResampler.InputSamples[c], IntermediateSampleRate, myResampler.ToSampleRate)
 				} else {
-					myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], TempFromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
+
+					myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], IntermediateSampleRate, myResampler.ToSampleRate, myResampler.Quality)
 				}
 
 			} else {
 				myResampler.InputSamples[c], err = ResampleUpsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate, myResampler.Quality)
 			}
+
 		} else {
 			//better for downsampling
 			myResampler.InputSamples[c], err = ResamplerDownsample(myResampler.InputSamples[c], myResampler.FromSampleRate, myResampler.ToSampleRate)
@@ -412,6 +473,10 @@ func (myResampler *Resampler) Resample() error {
 		if err != nil {
 			return err
 		}
+		//if IntermediateSampleRate != myResampler.ToSampleRate {
+		//	fmt.Printf("IntermediateSampleRate : %d and target rate : %d\n", IntermediateSampleRate, myResampler.ToSampleRate)
+		myResampler.InputSamples[c] = bandPassUpsampledSignal(myResampler.InputSamples[c], float64(myResampler.ToSampleRate), myResampler.DebugFunc)
+		//}
 	}
 
 	return nil
@@ -433,7 +498,7 @@ const (
 // double beta <0: value will be estimated
 // returns an impulse of type []float64
 func designLpf(Fp, Fs, sampleRate, att float64, k int, beta float64) []float64 {
-	// Normalize Fp and Fs to the Nyquist frequency
+
 	Fn := sampleRate / 2.0
 	Fp /= Fn
 	Fs /= Fn
@@ -472,6 +537,7 @@ func designLpf(Fp, Fs, sampleRate, att float64, k int, beta float64) []float64 {
 func kaiserParams(att, Fc, trBw float64, beta *float64) {
 	if *beta < 0 {
 		*beta = kaiserBeta(att, trBw*0.5/Fc)
+		//*beta = kaiserBeta(att)
 	}
 	if att < 60 {
 		// not necessary, but errors without it.

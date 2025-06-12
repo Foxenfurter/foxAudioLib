@@ -3,7 +3,9 @@ package wavTest
 import (
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
+
 	"testing"
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder"
@@ -36,37 +38,90 @@ func TestLoadAndProcessImpulse(t *testing.T) {
 	// Setup test environment
 	tempDir := "H:\\temp"
 	testLogger := createTestLogger(t, tempDir)
-
 	ap := AudioProcessor{}
-	FirWavFile := tempDir + "\\iLoud Right-regen-2.wav"
-	OutputFile := tempDir + "\\MeasurementOutput\\iLoud Right-regen-2-88200-clean.wav"
 	ap.Logger = testLogger
 	ap.Logger.DebugEnabled = true
-	targetSampleRate := 88200
 	targetLevel := 0.75
-	ProcessImpulses(tempDir, FirWavFile, OutputFile, targetSampleRate, targetLevel, &ap)
-	FirWavFile = tempDir + "\\Clacton (02-06-2019) 44100.wav"
-	OutputFile = tempDir + "\\MeasurementOutput\\Clacton (02-06-2019) 88200-clean.wav"
-	ap.Logger = testLogger
-	ap.Logger.DebugEnabled = true
-	targetSampleRate = 88200
-	targetLevel = 0.75
-	ProcessImpulses(tempDir, FirWavFile, OutputFile, targetSampleRate, targetLevel, &ap)
 
-	//used for normalization - may need to add this as a configurable item in the future
+	// Create output directory if it doesn't exist
+	outputDir := filepath.Join(tempDir, "MeasurementOutput")
+	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
+		os.Mkdir(outputDir, os.ModePerm)
+	}
 
+	// Define target sample rates
+	sampleRates := []int{44100, 48000, 88200, 96000, 176400, 192000} // Add your desired rates
+
+	// Define test cases (input file and output base name)
+	testCases := []struct {
+		inputFile  string
+		outputBase string
+	}{
+		{
+			inputFile:  "iLoud Right-regen-2.wav",
+			outputBase: "iLoud Right-regen-2",
+		},
+		{
+			inputFile:  "Cavern4Iloud.wav",
+			outputBase: "Cavern4Iloud",
+		},
+	}
+
+	// Process each sample rate and test case combination
+	for _, rate := range sampleRates {
+		for _, tc := range testCases {
+			inputPath := filepath.Join(tempDir, tc.inputFile)
+			outputPath := filepath.Join(outputDir, fmt.Sprintf("%s-%d-clean.wav", tc.outputBase, rate))
+			ProcessWithSox(tempDir, inputPath, outputPath, rate, targetLevel, &ap)
+			//ProcessImpulses(tempDir, inputPath, outputPath, rate, targetLevel, &ap)
+		}
+	}
+}
+
+func ProcessWithSox(tempDir string, FirWavFile string, OutputFile string, targetSampleRate int, targetLevel float64, ap *AudioProcessor) {
+	errorText := "wavTest: "
+	myResampler := foxResampler.NewResampler()
+	myResampler.ToSampleRate = targetSampleRate
+	myResampler.DebugOn = false
+	myResampler.DebugFunc = ap.Logger.Debug
+	myResampler.SOXPath = "C:\\Program Files\\Lyrion\\server\\Bin\\MSWin32-x64-multi-thread\\sox.exe"
+
+	myImpulse, err := myResampler.ReadnResampleFile2Buffer(FirWavFile)
+	if err != nil {
+		ap.Logger.Warn(errorText + "Error loading impulse: " + err.Error())
+	}
+
+	targetBitDepth := 64
+
+	// remove silence and background noise from mpulse
+	ap.Impulse, err = CleanUpImpulse(myImpulse, targetSampleRate, -75.0, ap.Logger)
+	if err != nil {
+		ap.Logger.Warn(errorText + "Error loading impulse: " + err.Error())
+	}
+
+	ap.Logger.Debug("Backup Impulse: " + OutputFile)
+	foxAudioEncoder.WriteWavFile(
+		OutputFile,
+		ap.Impulse,
+		targetSampleRate,
+		targetBitDepth,
+		len(ap.Impulse),
+		true, // i.e.  overwrite
+		ap.Logger,
+	)
 }
 
 func ProcessImpulses(tempDir string, FirWavFile string, OutputFile string, targetSampleRate int, targetLevel float64, ap *AudioProcessor) {
+
 	myImpulse, err := localLoadImpulse(FirWavFile, targetSampleRate, targetLevel, ap.Logger)
 	errorText := "wavTest: "
 	if err != nil {
 		ap.Logger.Warn(errorText + "Error loading impulse: " + err.Error())
 	}
-	ap.Impulse = myImpulse
+
 	targetBitDepth := 32
 
-	// remove silence and background noise from impulse
+	// remove silence and background noise from mpulse
 	ap.Impulse, err = CleanUpImpulse(myImpulse, targetSampleRate, -75.0, ap.Logger)
 	if err != nil {
 		ap.Logger.Warn(errorText + "Error loading impulse: " + err.Error())

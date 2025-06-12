@@ -78,6 +78,28 @@ func CalculateMaxGain(audioData []float64) float64 {
 	return maxGain
 }
 
+// calculates the safe maximum gain value for a filter
+func CalculateSafeMaxGain(filter []float64) float64 {
+	// Calculate both peak and RMS gains
+	peak := 0.0
+	sumSquares := 0.0
+
+	for _, sample := range filter {
+		abs := math.Abs(sample)
+		if abs > peak {
+			peak = abs
+		}
+		sumSquares += sample * sample
+	}
+
+	rms := math.Sqrt(sumSquares)
+
+	// Use whichever requires more attenuation
+	safeMaxGain := math.Max(peak, rms*3.0)
+
+	return safeMaxGain
+}
+
 // Normalises and audio signal to the target level using a max and target level.
 // Max Level has been pre-calculated across all channels
 func NormalizeAudioChannel(audioImpulse []float64, targetLevel float64, max float64) []float64 {
@@ -100,7 +122,7 @@ func NormalizeAudioChannel(audioImpulse []float64, targetLevel float64, max floa
 }
 
 // Normalizes Audio Data in supplied samples
-func Normalize(inputSamples [][]float64, targetLevel float64) float64 {
+func NormalizePeak(inputSamples [][]float64, targetLevel float64) float64 {
 	// Find max gain on all channels
 	impulseGain := 0.0
 	for _, channel := range inputSamples {

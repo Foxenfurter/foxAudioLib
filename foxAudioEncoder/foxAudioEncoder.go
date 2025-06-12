@@ -40,8 +40,9 @@ type AudioEncoder struct {
 type EncoderInterface interface {
 	EncodeHeader() ([]byte, error)
 	EncodeData(samples [][]float64) ([]byte, error)
-	EncodeSingleChannel(buffer []float64) ([]byte, error)
+	//EncodeSingleChannel(buffer []float64) ([]byte, error)
 	GetPeak() float64
+	SetFormatType(formatType foxWavEncoder.FormatType)
 }
 
 const (
@@ -81,6 +82,7 @@ func (myEncoder *AudioEncoder) Initialise() error {
 			NumChannels: myEncoder.NumChannels,
 			Size:        myEncoder.Size,
 		}
+		// It is possible to over-write the 32 bit format type to PCM instead of float. Do it here if needed
 		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating wav header..."))
 
 		err = myEncoder.writeHeader() // Write header during initialization
@@ -93,8 +95,11 @@ func (myEncoder *AudioEncoder) Initialise() error {
 			BitDepth:    myEncoder.BitDepth,
 			NumChannels: myEncoder.NumChannels,
 			Size:        myEncoder.Size,
+			FormatType:  foxWavEncoder.FormatPCM,
 		}
-
+		if myEncoder.BitDepth == 32 || myEncoder.BitDepth == 64 {
+			myEncoder.Encoder.SetFormatType(foxWavEncoder.FormatFloat)
+		}
 		//Create empty header - no header for PCM
 		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  PCM Output..."))
 
@@ -134,10 +139,10 @@ type EncoderStatus struct {
 	StartTime       time.Time
 }
 
-func (myEncoder *AudioEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
+/*func (myEncoder *AudioEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
 	return myEncoder.Encoder.EncodeSingleChannel(buffer)
 }
-
+*/
 // Wraps the encoder into a channel based function that takes a stream of bytes, throttleInputChannel as duration and a wait group
 // the optional throttleInputChannel will send the number of samples processed so far to be used by the feeding function in order to slow down any processing
 // this function is optimized for speed and will use a buffer to store complete samples before encoding
@@ -227,8 +232,7 @@ func (myEncoder *AudioEncoder) WriteBytesChannel(
 // the optional throttleInputChannel will send a delay based upont the encoder processing time to be used by the feeding function in order to slow down any processing
 // this function is optimized for speed and will use a buffer to store samples before encoding
 func (myEncoder *AudioEncoder) EncodeSamplesChannel(
-	samplesChannel <-chan [][]float64,
-	throttleInputChannel chan<- int64) error {
+	samplesChannel <-chan [][]float64) error {
 	const functionName = "EncodeSamplesChannel"
 	var totalSamples int64
 	totalSamples = 0
@@ -239,7 +243,7 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(
 
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Target Samples: %v", targetSamples))
 	for samples := range samplesChannel {
-		//start := time.Now()
+
 		for i := range samples {
 			buffer[i] = append(buffer[i], samples[i]...)
 		}
@@ -266,12 +270,7 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(
 			totalSamples += int64(len(batch[0]))
 
 		}
-		// Throttle logic
-		//elapsed := time.Since(start)
 
-		if throttleInputChannel != nil {
-			throttleInputChannel <- totalSamples
-		}
 	}
 
 	// Flush remaining samples
@@ -284,148 +283,8 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(
 		totalSamples += int64(len(buffer[0]))
 
 	}
-	//probably not needed as should no longer be reading by now...
-	if throttleInputChannel != nil {
-		throttleInputChannel <- totalSamples
-		close(throttleInputChannel)
-	}
+
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Total samples encoded: %v", totalSamples))
-	return nil
-}
-
-func (myEncoder *AudioEncoder) AccumulateAndEncodeChannel(samplesChannel <-chan [][]float64, throttleInputChannel chan<- time.Duration, n int) error {
-	const functionName = "AccumulateAndEncode"
-	channelCount := myEncoder.NumChannels
-	fmt.Println(packageName+":"+functionName+": Expecting samples: ", n)
-
-	//counter for samples populated
-	s := 0
-	accumulatedSamples := make([][]float64, channelCount) // Allocate space for 2 channels
-	// Assuming samples[0] represents the channel count
-	start := time.Now()
-	for samples := range samplesChannel {
-
-		for i := range accumulatedSamples {
-			accumulatedSamples[i] = make([]float64, n) // Initialize each channel with an empty slice
-		}
-		//println("Samples in this batch", len(samples), len(samples[0]))
-		for si := 0; si < len(samples[0]); si++ {
-
-			for c := 0; c < channelCount; c++ {
-
-				accumulatedSamples[c][s] = samples[c][si]
-
-			}
-
-			if s == n-1 { // Check channel 0 for fullness
-				// Encode and write accumulated samples
-				fmt.Println("Encode and write accumulated samples...", s)
-				// reset the counter
-				s = 0
-				err := myEncoder.EncodeData(accumulatedSamples)
-
-				if err != nil {
-					// Handle error
-					return errors.New(packageName + ":" + functionName + ": " + err.Error())
-				}
-
-				//
-
-			}
-			s++
-		}
-		if throttleInputChannel != nil {
-			elapsedTime := time.Since(start)
-			throttleInputChannel <- elapsedTime
-			start = time.Now()
-		}
-
-		fmt.Println("Encode and accumulated samples number so far: ", s)
-
-	}
-	// We gave sime leftover samples
-	for c := 0; c < channelCount; c++ {
-		accumulatedSamples[c] = accumulatedSamples[c][:s] // Only keep samples populated so far
-	}
-
-	// Handle remaining samples on the last iteration
-	if len(accumulatedSamples[0]) > 0 { // Check channel 0 for remaining data
-		fmt.Println("Encode and write remaining samples...")
-		err := myEncoder.EncodeData(accumulatedSamples)
-		if err != nil {
-			// Handle error
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-
-		}
-		if throttleInputChannel != nil {
-			elapsedTime := time.Since(start)
-			throttleInputChannel <- elapsedTime
-
-		}
-
-	}
-	return nil
-}
-
-func (myEncoder *AudioEncoder) AccumulateAndEncode(samples [][]float64, n int) error {
-	const functionName = "AccumulateAndEncode"
-	channelCount := myEncoder.NumChannels
-	fmt.Println(packageName+":"+functionName+": Expecting samples: ", n)
-	accumulatedSamples := make([][]float64, channelCount) // Allocate space for 2 channels
-	for i := range accumulatedSamples {
-		accumulatedSamples[i] = make([]float64, n) // Initialize each channel with an empty slice
-	}
-	//counter for samples populated
-	s := 0
-	// Assuming samples[0] represents the channel count
-
-	for _, sample := range samples {
-		for c := 0; c < channelCount; c++ {
-			// Ensure enough slots in the accumulated sample for this channel
-			if len(accumulatedSamples[c]) < n {
-				//accumulatedSamples[c] = append(accumulatedSamples[c], make([]float64, n-len(accumulatedSamples[c]))...)
-
-			}
-			accumulatedSamples[c][s] = sample[c]
-			//increment the sample count
-			if c == 0 {
-				s++
-			}
-			fmt.Println("Encode and accumulated samples number so far: ", s)
-			// Add the current sample value to the appropriate channel
-			//accumulatedSamples[c][len(accumulatedSamples[c])-1] = sample[c]
-		}
-
-		if s == n { // Check channel 0 for fullness
-			// Encode and write accumulated samples
-			fmt.Println("Encode and write accumulated samples...")
-			err := myEncoder.EncodeData(accumulatedSamples)
-			if err != nil {
-				// Handle error
-
-				return errors.New(packageName + ":" + functionName + ": " + err.Error())
-			}
-
-			// Reset accumulated samples for the next batch
-			//	for c := 0; c < channelCount; c++ {
-			//		accumulatedSamples[c] = accumulatedSamples[c][:0] // Clear slice without reallocation
-			//	}
-		}
-	}
-	for c := 0; c < channelCount; c++ {
-		accumulatedSamples[c] = accumulatedSamples[c][:s] // Only keep samples populated so far
-	}
-
-	// Handle remaining samples on the last iteration
-	if len(accumulatedSamples[0]) > 0 { // Check channel 0 for remaining data
-		fmt.Println("Encode and write remaining samples...")
-		err := myEncoder.EncodeData(accumulatedSamples)
-		if err != nil {
-			// Handle error
-			return errors.New(packageName + ":" + functionName + ": " + err.Error())
-
-		}
-	}
 	return nil
 }
 

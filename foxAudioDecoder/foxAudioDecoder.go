@@ -154,30 +154,22 @@ func (myDecoder *AudioDecoder) Close() error {
 }
 
 // Should call the lower level function and pass in the Channel to be used for transmitting decoded samples
-// Throttle Loadre is optional and enables the Decoder to limit the speed of the loader.
 // Current version of wav loader does not need throttling
-func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64, BackPressureChannel <-chan int64) error {
+func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64) error {
 	const functionName = "DecodeSamples"
 	var err error
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
-		if BackPressureChannel != nil {
-			err = myDecoder.WavDecoder.DecodeInputBackPressure(DecodedSamplesChannel, BackPressureChannel)
+		err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 
-		} else {
-			err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
-		}
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
 
 	case "PCM":
-		if BackPressureChannel != nil {
-			err = myDecoder.WavDecoder.DecodeInputBackPressure(DecodedSamplesChannel, BackPressureChannel)
 
-		} else {
-			err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
-		}
+		err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
@@ -220,7 +212,7 @@ func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fil
 			close(DecodedSamplesChannel) // Close the channel after decoding
 			WG.Done()
 		}()
-		err := myInputDecoder.DecodeSamples(DecodedSamplesChannel, nil)
+		err := myInputDecoder.DecodeSamples(DecodedSamplesChannel)
 		if err != nil {
 			myLogger.Error(MsgHeader + "Decoder failed: " + err.Error())
 			return

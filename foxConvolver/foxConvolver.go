@@ -156,6 +156,28 @@ func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float
 	return output[start:end]
 }
 
+func MaxGainFromFFT(impulse []float64) float64 {
+	n := len(impulse)
+	// Create complex array for FFT
+	cdata := make([]complex128, n)
+	for i := range impulse {
+		cdata[i] = complex(impulse[i], 0)
+	}
+
+	// Compute FFT (using your preferred FFT library)
+	cdata = fft.Fft(cdata, false) // Replace with your actual FFT call
+
+	// Find maximum magnitude in frequency domain
+	maxGain := 0.0
+	for _, v := range cdata {
+		mag := cmplx.Abs(v)
+		if mag > maxGain {
+			maxGain = mag
+		}
+	}
+	return maxGain
+}
+
 // Initialise Convolver for Streaming convolution - prebuilds the Impulse FFT and sets up the overlap
 // calculates the target size for the signal
 func (myConvolver *Convolver) InitForStreaming() {
@@ -243,7 +265,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 		CanConvolve = false
 	}
 	if CanConvolve {
-		myConvolver.InitForStreaming()
+		//myConvolver.InitForStreaming()
 
 		//targetSignalLength := myConvolver.GetPaddedLength() - myConvolver.impulseLength + 1 // This is N - M + 1
 		targetSignalLength = myConvolver.outputLength

@@ -49,9 +49,8 @@ func (l *Logger) Log(logType, description string) {
 	if logType == Debug && !l.DebugEnabled {
 		return
 	}
-	defer l.mu.Unlock()
-
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	logEntry := ""
 	// Info log type needs to be consistent
 	if logType == "Info" {
@@ -85,11 +84,21 @@ func (l *Logger) FatalError(description string) {
 	os.Exit(1)
 }
 
+func (l *Logger) flush() {
+
+	if l.LogFile != nil {
+		if err := l.LogFile.Sync(); err != nil {
+			log.Printf("LOG ERROR: Failed to sync log file: %v", err)
+		}
+	}
+}
+
 func (l *Logger) Close() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	if l.LogFile != nil {
+		l.flush()
 		if err := l.LogFile.Close(); err != nil {
 			log.Printf("LOG ERROR: Failed to close log file: %v", err)
 		}

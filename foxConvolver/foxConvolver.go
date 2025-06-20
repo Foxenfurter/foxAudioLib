@@ -183,8 +183,11 @@ func MaxGainFromFFT(impulse []float64) float64 {
 func (myConvolver *Convolver) InitForStreaming() {
 	// Check to see if any inputs to the calculation have changed and recalulate if necessary
 	myConvolver.impulseLength = len(myConvolver.FilterImpulse) // M
-	myConvolver.overlapLength = myConvolver.impulseLength - 1  // M-1
-	myConvolver.outputLength = myConvolver.signalBlockLength   //equal to L
+	if myConvolver.impulseLength == 0 {
+		return
+	}
+	myConvolver.overlapLength = myConvolver.impulseLength - 1 // M-1
+	myConvolver.outputLength = myConvolver.signalBlockLength  //equal to L
 	// we have pre-computed the signal block length
 	//myConvolver.paddedLength = NextPowerOf2(2 * (myConvolver.impulseLength))
 	myConvolver.paddedLength = NextPowerOf2(myConvolver.impulseLength + myConvolver.outputLength - 1)
@@ -284,6 +287,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 				NoConvolverMessage = true
 			}
 			outputSignalChannel <- inputBlock
+			continue
 
 		} else {
 			// The convolver has a buffer for accumulating and managing the signal
@@ -310,7 +314,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 			}
 		}
 	}
-	if len(myConvolver.Buffer) > 0 {
+	if len(myConvolver.Buffer) > 0 && CanConvolve {
 		// flush the remaining data in the buffer
 		totalProcessed += len(myConvolver.Buffer)
 		if myConvolver.DebugOn {

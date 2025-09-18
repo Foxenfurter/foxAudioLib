@@ -626,7 +626,44 @@ func (w *WaveFile) readInt32FromInput(myReader io.Reader) (int32, error) {
 	}
 	return int32(binary.LittleEndian.Uint32(buf)), nil
 }
+
+// decodeIEEEExtended decodes a 10-byte IEEE 754 extended double-precision float.
+// This is the format used for sample rates in AIFF files.
 func decodeIEEEExtended(b []byte) (float64, error) {
+	if len(b) != 10 {
+		return 0, fmt.Errorf("expected 10 bytes for IEEE extended float, got %d", len(b))
+	}
+
+	// The first 2 bytes are for the sign and exponent
+	exponent := uint16(b[0])<<8 | uint16(b[1])
+	sign := 1.0
+	// Check the most significant bit for the sign (bit 15)
+	if (exponent & 0x8000) != 0 {
+		sign = -1.0
+	}
+	// Clear the sign bit
+	exponent = exponent & 0x7FFF
+
+	// The remaining 8 bytes are the mantissa (fractional part)
+	mantissa := uint64(b[2])<<56 | uint64(b[3])<<48 | uint64(b[4])<<40 | uint64(b[5])<<32 |
+		uint64(b[6])<<24 | uint64(b[7])<<16 | uint64(b[8])<<8 | uint64(b[9])
+
+	// Special cases:
+	if exponent == 0 && mantissa == 0 {
+		return 0, nil // Zero
+	}
+	if exponent == 0x7FFF {
+		// Infinity or NaN
+		return 0, fmt.Errorf("unsupported: infinity or NaN IEEE extended float")
+	}
+
+	// Calculate the float value
+	// The exponent is biased by 16383.
+	// The mantissa is scaled by 2^63
+	return sign * float64(mantissa) / math.Pow(2, 63) * math.Pow(2, float64(exponent-16383)), nil
+}
+
+func decodeIEEEExtendedOld(b []byte) (float64, error) {
 
 	commonRates := map[string]float64{
 		"\x40\x0E\xAC\x44\x00\x00\x00\x00\x00\x00": 44100.0,
@@ -643,7 +680,7 @@ func decodeIEEEExtended(b []byte) (float64, error) {
 		return rate, nil
 	}
 
-	return 0, fmt.Errorf("unsupported or unrecognized 10-byte IEEE extended float pattern")
+	return 0, fmt.Errorf("decodeIEEEExtended: unsupported or unrecognized 10-byte IEEE extended float pattern: %X", b)
 }
 
 // Read Wav File Header

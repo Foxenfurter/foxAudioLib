@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 	"github.com/Foxenfurter/foxAudioLib/foxLog"
@@ -42,6 +43,7 @@ type AudioDecoder struct {
 	TotalSamples int64
 	DebugFunc    func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
 	RawPeak      float64
+	TimeStamp    string
 }
 
 // NewDecoder creates a new decoder with implicit file opening or Stdin setup
@@ -184,21 +186,28 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fileType string, myLogger *foxLog.Logger) ([][]float64, error) {
 	const functionName = "LoadFiletoBuffer"
 	const MsgHeader = packageName + ": " + functionName + ": "
+
 	if myInputDecoder.DebugFunc != nil {
 		myInputDecoder.debug(MsgHeader + " Loading file...")
 	}
-	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
+	fileInfo, err := os.Stat(inputFile)
+	os.IsNotExist(err)
+	if err != nil {
 		return nil, fmt.Errorf("input file %s does not exist", inputFile)
 	}
+
+	modTime := fileInfo.ModTime()
+
 	// Decode the audio file
 	myInputDecoder.Type = fileType
 	myInputDecoder.Filename = inputFile
 
-	err := myInputDecoder.Initialise()
+	err = myInputDecoder.Initialise()
+
 	if err != nil {
 		return nil, fmt.Errorf("%s: decoder init failed: %v", functionName, err)
 	}
-
+	myInputDecoder.TimeStamp = modTime.UTC().Format(time.RFC3339)
 	if myInputDecoder.DebugFunc != nil {
 		myInputDecoder.debug(MsgHeader + fmt.Sprintf("File Decoder initialized: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
 	}

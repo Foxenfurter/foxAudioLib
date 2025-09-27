@@ -125,7 +125,7 @@ func main() {
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		myDecoder.DecodeSamples(DecodedSamplesChannel, nil)
+		myDecoder.DecodeSamples(DecodedSamplesChannel)
 
 	}()
 
@@ -235,7 +235,7 @@ func MergePEQandSingleFIRImpulse(lclPEQFilters *[]foxPEQ.PEQFilter, myImpulseDec
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-		myImpulseDecoder.DecodeSamples(DecodedImpulseChannel, nil)
+		myImpulseDecoder.DecodeSamples(DecodedImpulseChannel)
 	}()
 
 	WG.Add(1)

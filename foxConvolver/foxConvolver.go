@@ -11,6 +11,9 @@ import (
 	"strconv"
 
 	//gofft "github.com/argusdusty/gofft"
+	"bytes"
+	"encoding/gob"
+
 	"scientificgo.org/fft"
 )
 
@@ -115,7 +118,72 @@ func NextPowerOf2(n int) int {
 	return 1 << bits.Len(uint(n-1))
 }
 
+// GobEncode implements the gob.GobEncoder interface for convolver to cache data
+func (c Convolver) GobEncode() ([]byte, error) {
+	var buf bytes.Buffer
+	enc := gob.NewEncoder(&buf)
+
+	// Encode ONLY the fields you want to persist
+	if err := enc.Encode(c.FilterImpulse); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(c.impulseFFT); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(c.impulseLength); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(c.signalBlockLength); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(c.overlapLength); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(c.paddedLength); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(c.outputLength); err != nil {
+		return nil, err
+	}
+	// Add any other static fields you want to save
+
+	return buf.Bytes(), nil
+}
+
+// GobDecode implements the gob.GobDecoder interface for convolver to read cached data
+func (c *Convolver) GobDecode(data []byte) error {
+	buf := bytes.NewBuffer(data)
+	dec := gob.NewDecoder(buf)
+
+	// Decode in the same order
+	if err := dec.Decode(&c.FilterImpulse); err != nil {
+		return err
+	}
+	if err := dec.Decode(&c.impulseFFT); err != nil {
+		return err
+	}
+	if err := dec.Decode(&c.impulseLength); err != nil {
+		return err
+	}
+	if err := dec.Decode(&c.signalBlockLength); err != nil {
+		return err
+	}
+	if err := dec.Decode(&c.overlapLength); err != nil {
+		return err
+	}
+	if err := dec.Decode(&c.paddedLength); err != nil {
+		return err
+	}
+	if err := dec.Decode(&c.outputLength); err != nil {
+		return err
+	}
+	// Add any other static fields you want to load
+
+	return nil
+}
+
 // Convolver using Overlap and save method. Allows for signal to be sent in blocks e.g. streaming or via channels
+
 func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float64 {
 	if len(myConvolver.FilterImpulse) == 0 {
 		return signalBlock
@@ -135,7 +203,7 @@ func (myConvolver *Convolver) ConvolveOverlapSave(signalBlock []float64) []float
 		overlappedSignal = append(overlappedSignal, signalPadding...)
 	}
 	// now create next tail - it needs to be done pre-convolution - ignore any padding
-	start := myConvolver.overlapLength + myConvolver.signalBlockLength - myConvolver.overlapLength
+	start := myConvolver.signalBlockLength
 	end := start + myConvolver.overlapLength
 
 	myConvolver.overlapTail = overlappedSignal[start:end]
@@ -207,6 +275,9 @@ func (myConvolver *Convolver) InitForStreaming() {
 	if len(myConvolver.overlapTail) == 0 {
 		myConvolver.overlapTail = make([]float64, myConvolver.overlapLength)
 	}
+	if myConvolver.DebugOn {
+		myConvolver.debug(packageName + ": " + "InitForStreaming" + " Impulse Length: " + strconv.Itoa(myConvolver.impulseLength) + " Overlap Length: " + strconv.Itoa(myConvolver.overlapLength) + " Tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
+	}
 
 }
 
@@ -274,7 +345,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 		targetSignalLength = myConvolver.outputLength
 
 		if myConvolver.DebugOn {
-			myConvolver.debug(packageName + ": " + functionName + ": targetSignalLength: " + strconv.Itoa(targetSignalLength))
+			myConvolver.debug(packageName + ": " + functionName + ": targetSignalLength: " + strconv.Itoa(targetSignalLength) + " Tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
 		}
 	}
 
@@ -301,7 +372,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 					totalProcessed += targetSignalLength
 					if !NoConvolverMessage {
 						if myConvolver.DebugOn {
-							myConvolver.debug(packageName + ": " + functionName + ": Channel Convolving")
+							myConvolver.debug(packageName + ": " + functionName + ": Channel Convolving" + " Tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
 						}
 						NoConvolverMessage = true
 					}
@@ -316,9 +387,10 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 	}
 	if len(myConvolver.Buffer) > 0 && CanConvolve {
 		// flush the remaining data in the buffer
+
 		totalProcessed += len(myConvolver.Buffer)
 		if myConvolver.DebugOn {
-			myConvolver.debug(packageName + ": " + functionName + ": Flushing remaining data in buffer: " + strconv.Itoa(len(myConvolver.Buffer)))
+			myConvolver.debug(packageName + ": " + functionName + ": Flushing remaining data in buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
 		}
 		outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer)
 		if myConvolver.DebugOn {

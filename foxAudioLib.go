@@ -159,7 +159,10 @@ func main() {
 
 		defer WG.Done()
 		//myEncoder.AccumulateAndEncodeChannel(DecodedSamplesChannel, ThrottleLoaderChannel, 40000)
-		myEncoder.EncodeSamplesChannel(mergedChannel, nil)
+		err := myEncoder.EncodeSamplesChannel(mergedChannel)
+		if err != nil {
+			println("Error encoding samples: ", err)
+		}
 
 	}()
 

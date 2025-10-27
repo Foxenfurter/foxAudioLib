@@ -389,14 +389,15 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 		// flush the remaining data in the buffer
 
 		totalProcessed += len(myConvolver.Buffer)
-		if myConvolver.DebugOn {
-			myConvolver.debug(packageName + ": " + functionName + ": Flushing remaining data in buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
-		}
-		outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer)
-		if myConvolver.DebugOn {
-			myConvolver.debug(packageName + ": " + functionName + ": Flush complete")
-		}
-		myConvolver.Buffer = make([]float64, 0)
+		//	if myConvolver.DebugOn {
+		//		myConvolver.debug(packageName + ": " + functionName + ": Persisting remaining data in buffer: " + strconv.Itoa(len(myConvolver.Buffer)) + " tail Length: " + strconv.Itoa(len(myConvolver.overlapTail)))
+		//	}
+		/*	outputSignalChannel <- myConvolver.ConvolveOverlapSave(myConvolver.Buffer)
+			if myConvolver.DebugOn {
+				myConvolver.debug(packageName + ": " + functionName + ": Flush complete")
+			}
+			myConvolver.Buffer = make([]float64, 0)
+		*/
 	}
 
 	if myConvolver.DebugOn {

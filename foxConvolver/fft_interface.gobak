@@ -1,0 +1,6 @@
+// fft_interface.go
+package foxConvolver
+
+type FFTProvider interface {
+	Transform(data []complex128, inverse bool) []complex128
+}

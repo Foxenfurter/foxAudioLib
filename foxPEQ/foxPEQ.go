@@ -81,7 +81,7 @@ func IIRFilter(input []float64, b [3]float64, a [3]float64, output []float64) {
 	y := make([]float64, N)
 	w := make([]float64, M)
 
-	for n := 0; n < N; n++ {
+	for n := range N {
 		y[n] = b[0]*input[n] + w[0]
 		for i := 1; i < M; i++ {
 			w[i-1] = b[i]*input[n] + w[i] - a[i]*y[n]
@@ -104,7 +104,7 @@ func (PEQ *PEQFilter) GenerateFilterImpulse() {
 
 	impulse[0] = 1
 
-	for i := 0; i < maxLength; i++ {
+	for i := range maxLength {
 		a = PEQ.FilterCoefficients[i].A
 		b = PEQ.FilterCoefficients[i].B
 

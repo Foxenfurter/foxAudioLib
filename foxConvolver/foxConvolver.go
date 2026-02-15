@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"encoding/gob"
 
-	"scientificgo.org/fft"
+	// Choose one fft package. Comment the other one out
+	"scientificgo.org/fft" // leading go fft easy to build
+	//fft "github.com/Foxenfurter/foxAudioLib/foxFFTHeartofRust" // built on rustFFT harder to build but faster
 )
 
 const packageName = "foxConvolver"
@@ -342,6 +344,7 @@ func (myConvolver *Convolver) ConvolveChannel(inputSignalChannel, outputSignalCh
 		//myConvolver.InitForStreaming()
 
 		//targetSignalLength := myConvolver.GetPaddedLength() - myConvolver.impulseLength + 1 // This is N - M + 1
+		//myConvolver.outputLength = int(float64(myConvolver.GetPaddedLength()-myConvolver.impulseLength+1) * 0.8) // This is N - M + 1
 		targetSignalLength = myConvolver.outputLength
 
 		if myConvolver.DebugOn {

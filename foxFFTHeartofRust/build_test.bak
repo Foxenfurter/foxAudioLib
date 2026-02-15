@@ -1,0 +1,10 @@
+//go:build windows && amd64
+// +build windows,amd64
+
+package foxFFTHeartofRust
+
+import "testing"
+
+func TestBuildTags(t *testing.T) {
+	t.Log("Windows AMD64 build tag is working!")
+}

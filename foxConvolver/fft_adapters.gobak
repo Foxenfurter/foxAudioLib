@@ -1,0 +1,116 @@
+// fft_adapters.go
+package foxConvolver
+
+import (
+	"fmt"
+	"time"
+
+	foxFFT "github.com/Foxenfurter/foxAudioLib/foxFFTHeartofRust"
+	gofft "github.com/argusdusty/gofft"
+	sfft "scientificgo.org/fft"
+)
+
+// ScientificGoAdapter wraps the scientificgo FFT
+type ScientificGoAdapter struct {
+	verified bool
+}
+
+func (s *ScientificGoAdapter) Transform(data []complex128, inverse bool) []complex128 {
+	if !s.verified {
+		s.verified = true
+		fmt.Printf("[FFT] ScientificGo adapter active\n")
+	}
+	return sfft.Fft(data, inverse)
+}
+
+// FoxFFTHORAdapter wraps your Rust FFT implementation
+type FoxFFTHORAdapter struct {
+	verified bool
+}
+
+func (f *FoxFFTHORAdapter) Transform(data []complex128, inverse bool) []complex128 {
+	if !f.verified {
+		f.verified = true
+		fmt.Printf("[FFT] FoxFFT (Rust) adapter active\n")
+	}
+	result := foxFFT.Fft(data, inverse)
+
+	return result
+}
+
+// GoFFTAdapter wraps the argusdusty/gofft implementation
+type GoFFTAdapter struct {
+	verified bool
+}
+
+func (g *GoFFTAdapter) Transform(data []complex128, inverse bool) []complex128 {
+	if !g.verified {
+		g.verified = true
+		fmt.Printf("[FFT] GoFFT (argusdusty) adapter active\n")
+	}
+
+	n := len(data)
+	if n == 0 {
+		return data
+	}
+
+	if inverse {
+		err := gofft.IFFT(data)
+		if err != nil {
+			return nil
+		}
+	} else {
+		err := gofft.FFT(data)
+		if err != nil {
+			return nil
+		}
+	}
+	// Convert back to complex128
+
+	return data
+}
+
+// Benchmarking utility function
+func BenchmarkFFT(provider FFTProvider, name string, data []complex128, iterations int) time.Duration {
+	// Warm up
+	provider.Transform(data, false)
+
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		provider.Transform(data, false)
+	}
+	elapsed := time.Since(start)
+	fmt.Printf("[Benchmark] %s: %v for %d iterations\n", name, elapsed, iterations)
+	return elapsed
+}
+
+// CompareAllFFTs - utility function to compare performance of all adapters
+func CompareAllFFTs(testData []complex128, iterations int) {
+	fmt.Printf("\n=== FFT Performance Comparison ===\n")
+	fmt.Printf("Data size: %d, Iterations: %d\n", len(testData), iterations)
+
+	adapters := []struct {
+		name     string
+		provider FFTProvider
+	}{
+		{"ScientificGo", &ScientificGoAdapter{}},
+		{"GoFFT", &GoFFTAdapter{}},
+		{"FoxFFT", &FoxFFTHORAdapter{}},
+	}
+
+	// Benchmark each adapter
+	results := make(map[string]time.Duration)
+	for _, adapter := range adapters {
+		results[adapter.name] = BenchmarkFFT(adapter.provider, adapter.name, testData, iterations)
+	}
+
+	// Calculate ratios
+	baseTime := results["ScientificGo"]
+	fmt.Printf("\nPerformance Ratios (ScientificGo = 1.0):\n")
+	for name, duration := range results {
+		if name != "ScientificGo" {
+			ratio := float64(duration) / float64(baseTime)
+			fmt.Printf("  %s: %.2fx\n", name, ratio)
+		}
+	}
+}

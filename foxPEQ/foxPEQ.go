@@ -74,6 +74,47 @@ func (c *CoefficientsSlice) Add(coeff Coefficients) {
 	*c = append(*c, coeff)
 }
 
+// logTarget80 is the logarithm of the target amplitude corresponding to -80 dB, used for filter length calculation.
+const logTarget80 = -9.210340371976184 // math.Log(10.0^(-80/20))
+
+func (PEQ *PEQFilter) UpdateFilterLength() {
+	if len(PEQ.FilterCoefficients) == 0 {
+		return
+	}
+
+	maxN := 0
+	for _, coeff := range PEQ.FilterCoefficients {
+		a2 := coeff.A[2]
+		if a2 <= 0 || a2 >= 1 {
+			continue
+		}
+		r := math.Sqrt(a2)
+		// n = ceil(logTarget80 / log(r))
+		n := int(math.Ceil(logTarget80 / math.Log(r)))
+		if n > maxN {
+			maxN = n
+		}
+	}
+
+	if maxN == 0 {
+		// Fallback to heuristic: 32 periods of lowest frequency (assume 20 Hz)
+		maxN = int(32.0 * float64(PEQ.SampleRate) / 20.0)
+	}
+
+	margin := int(float64(maxN) * 0.1)
+	if margin < 1024 {
+		margin = 1024
+	}
+	newLen := maxN + margin
+
+	// Cap at 5 seconds if desired
+	if newLen > 5*PEQ.SampleRate {
+		newLen = 5 * PEQ.SampleRate
+	}
+
+	PEQ.FilterLength = newLen
+}
+
 func IIRFilter(input []float64, b [3]float64, a [3]float64, output []float64) {
 	N := len(input)
 	M := len(b)

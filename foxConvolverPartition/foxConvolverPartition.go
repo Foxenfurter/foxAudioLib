@@ -52,6 +52,7 @@ type PartitionedConvolver struct {
 	// Pre-allocated working buffers
 	workFFT    []complex128
 	workResult []complex128
+	MaxGain    float64
 
 	// Debug
 	DebugOn     bool
@@ -170,6 +171,7 @@ func (pc *PartitionedConvolver) initializePartitions() {
 	if len(pc.previousChunkTail) == 0 {
 		pc.previousChunkTail = make([]float64, PartitionedOverlapSize)
 	}
+	pc.MaxGain = pc.maxGainFromPartitions()
 
 }
 
@@ -474,6 +476,18 @@ func MaxGainFromFFT(impulse []float64) float64 {
 	return maxGain
 }
 
+func (pc *PartitionedConvolver) maxGainFromPartitions() float64 {
+	maxGain := 0.0
+	for _, partition := range pc.impulsePartitions {
+		for _, v := range partition {
+			if mag := cmplx.Abs(v); mag > maxGain {
+				maxGain = mag
+			}
+		}
+	}
+	return maxGain
+}
+
 // GobEncode - Save complete state for gapless playback
 // Saves:
 // 1. Algorithm state (previousChunkTail, audioFFTRing, ringPosition)
@@ -482,6 +496,20 @@ func MaxGainFromFFT(impulse []float64) float64 {
 func (pc *PartitionedConvolver) GobEncode() ([]byte, error) {
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
+
+	// Save the chunk size configuration used for this filter
+	if err := enc.Encode(PartitionedChunkSize); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(PartitionedFFTSize); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(PartitionedImpulseChunkSize); err != nil {
+		return nil, err
+	}
+	if err := enc.Encode(PartitionedOverlapSize); err != nil {
+		return nil, err
+	}
 
 	// Static configuration
 	if err := enc.Encode(pc.FilterImpulse); err != nil {
@@ -503,6 +531,10 @@ func (pc *PartitionedConvolver) GobEncode() ([]byte, error) {
 	}
 
 	if err := enc.Encode(pc.impulsePartitions); err != nil {
+		return nil, err
+	}
+
+	if err := enc.Encode(pc.MaxGain); err != nil {
 		return nil, err
 	}
 
@@ -530,6 +562,26 @@ func (pc *PartitionedConvolver) GobEncode() ([]byte, error) {
 func (pc *PartitionedConvolver) GobDecode(data []byte) error {
 	buf := bytes.NewBuffer(data)
 	dec := gob.NewDecoder(buf)
+	// Restore the chunk size configuration
+	var chunkSize, fftSize, impulseChunkSize, overlapSize int
+	if err := dec.Decode(&chunkSize); err != nil {
+		return err
+	}
+	if err := dec.Decode(&fftSize); err != nil {
+		return err
+	}
+	if err := dec.Decode(&impulseChunkSize); err != nil {
+		return err
+	}
+	if err := dec.Decode(&overlapSize); err != nil {
+		return err
+	}
+
+	// Set globals to match the cached filter
+	PartitionedChunkSize = chunkSize
+	PartitionedFFTSize = fftSize
+	PartitionedImpulseChunkSize = impulseChunkSize
+	PartitionedOverlapSize = overlapSize
 
 	// Static configuration
 	if err := dec.Decode(&pc.FilterImpulse); err != nil {
@@ -553,22 +605,10 @@ func (pc *PartitionedConvolver) GobDecode(data []byte) error {
 	if err := dec.Decode(&pc.impulsePartitions); err != nil {
 		return err
 	}
+	if err := dec.Decode(&pc.MaxGain); err != nil {
+		return err
+	}
 
-	// Dynamic algorithm state
-	/* Note: we are not restoring data relating to the input audio stream as these are handled in the ResidualsCache and passed back to the Convolver on the next track load. This includes:
-	if err := dec.Decode(&pc.audioFFTRing); err != nil {
-		return err
-	}
-	if err := dec.Decode(&pc.ringPosition); err != nil {
-		return err
-	}
-	if err := dec.Decode(&pc.previousChunkTail); err != nil {
-		return err
-	}
-	*/
-	//if err := dec.Decode(&pc.Buffer); err != nil {
-	//	return err
-	//}
 	pc.Buffer = make([]float64, 0)
 	pc.outputBuffer = make([]float64, 0)
 	pc.audioFFTRing = make([][]complex128, pc.ringSize)

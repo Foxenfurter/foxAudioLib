@@ -39,7 +39,7 @@ type PartitionedConvolver struct {
 
 	ringFilled bool // Indicates if we've filled the ring at least once
 	// Overlap-save state (algorithm state, not unprocessed input)
-	previousChunkTail []float64 // Last 2047 samples from previous chunk
+	previousChunkTail []float64 // Last 2047 samples from previous chunk - chunkTailCapacity
 
 	// Input buffering - accumulates until we have 2048 samples to process
 	Buffer []float64
@@ -72,7 +72,7 @@ func SetChunkSizeForSampleRate(sampleRate int) {
 
 	PartitionedFFTSize = PartitionedChunkSize * 2
 	PartitionedImpulseChunkSize = PartitionedChunkSize
-	PartitionedOverlapSize = PartitionedChunkSize //- 1
+	PartitionedOverlapSize = PartitionedChunkSize
 
 }
 

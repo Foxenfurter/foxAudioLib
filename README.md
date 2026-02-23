@@ -24,3 +24,5 @@
 The library emphasizes simplicity, portability, and explicit control. Packages can be used independently or together to build complete DSP pipelines. Primarily intended for audio processing tasks where Go’s portability and concurrency model are advantageous.
 
 ### Example Pipeline
+
+For examples look at FoxLyrionDSP and in particular the process-audio package as this is where the pipeline is initialised and run.

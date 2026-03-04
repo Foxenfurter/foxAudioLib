@@ -18,7 +18,7 @@ var (
 	/* ---------------------------------------------------------
 	FFT provider set here - options: scientificgo, gofft, foxfft_adapter_real, or foxfft
 	---------------------------------------------------------*/
-	fftProvider  = flag.String("fft", "foxfft_adapter_real", "FFT provider: scientificgo, gofft,foxfft_adapter_real, or foxfft")
+	fftProvider  = flag.String("fft", "foxfft_adapter", "FFT provider: scientificgo, gofft,foxfft_adapter, foxfft_adapter_real or foxfft_HOR")
 	packageName  = "foxAudioLib"
 	runBenchmark = flag.Bool("benchmark", true, "Run FFT benchmark before main processing")
 	//benchmarkSize = flag.Int("benchsize", 16384, "FFT size for benchmarking")
@@ -478,14 +478,17 @@ func min(a, b int) int {
 // Helper function to set FFT provider based on flag
 func setFFTProvider(conv *foxConvolver.Convolver, provider string) {
 	switch provider {
+	case "foxfft_adapter":
+		conv.SetFFTProviderByString("foxfft_adapter")
+		fmt.Println("Using  partitioned foxFFT provider")
 	case "foxfft_adapter_real":
 		conv.SetFFTProviderByString("foxfft_adapter_real")
-		fmt.Println("Using  partitioned foxFFT provider")
+		fmt.Println("Using  partitioned foxFFT real-input adapter provider")
 	case "gofft":
 		conv.SetFFTProviderByString("gofft")
 		fmt.Println("Using GoFFT (argusdusty) FFT provider")
-	case "foxfft":
-		conv.SetFFTProviderByString("foxfft")
+	case "foxfft_HOR":
+		conv.SetFFTProviderByString("foxfft_HOR")
 		fmt.Println("Using FoxFFT (Rust) FFT provider")
 	case "scientificgo":
 		fallthrough

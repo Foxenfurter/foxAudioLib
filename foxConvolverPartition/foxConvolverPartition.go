@@ -23,10 +23,10 @@ var (
 const packageName = "foxConvolverPartition"
 
 type PartitionedConvolver struct {
-	FilterImpulse     []float64
-	impulseLength     int
-	signalBlockLength int
-	outputLength      int // Target output block size for downstream
+	FilterImpulse []float64
+	impulseLength int
+	//signalBlockLength int
+	outputLength int // Target output block size for downstream
 
 	// Partitioned convolution state
 	impulsePartitions [][]complex128
@@ -47,11 +47,12 @@ type PartitionedConvolver struct {
 	// Output buffering - accumulates processed output until we have outputLength samples to send
 	outputBuffer []float64
 
-	overlapTail []float64 // For compatibility
+	//overlapTail []float64 // For compatibility
 
 	// Pre-allocated working buffers
-	workFFT    []complex128
+	//workFFT    []complex128
 	workResult []complex128
+	workOutput []float64
 	MaxGain    float64
 
 	// Debug
@@ -79,7 +80,7 @@ func SetChunkSizeForSampleRate(sampleRate int) {
 func NewPartitionedConvolver(impulse []float64, sampleRate int) *PartitionedConvolver {
 	// Set optimal chunk sizes for this sample rate
 	if sampleRate > 0 {
-		SetChunkSizeForSampleRate(sampleRate)
+		//SetChunkSizeForSampleRate(sampleRate)
 	}
 
 	pc := &PartitionedConvolver{
@@ -92,10 +93,11 @@ func NewPartitionedConvolver(impulse []float64, sampleRate int) *PartitionedConv
 		Buffer:            make([]float64, 0, PartitionedChunkSize*2),
 		outputBuffer:      make([]float64, 0, PartitionedChunkSize*4),
 		previousChunkTail: make([]float64, PartitionedOverlapSize),
-		workFFT:           make([]complex128, PartitionedFFTSize),
-		workResult:        make([]complex128, PartitionedFFTSize),
-		overlapTail:       make([]float64, 0),
-		outputLength:      PartitionedChunkSize, // Default to chunk size
+		//workFFT:           make([]complex128, PartitionedFFTSize),
+		workResult: make([]complex128, PartitionedFFTSize),
+		workOutput: make([]float64, PartitionedChunkSize),
+		//overlapTail:       make([]float64, 0),
+		outputLength: PartitionedChunkSize, // Default to chunk size
 		// intitialises ringbuffer
 		ringFilled: false,
 	}
@@ -205,7 +207,7 @@ func (pc *PartitionedConvolver) processChunk(chunk []float64, updateTail bool) [
 	overlapSize := L - 1
 
 	currentSlot := pc.audioFFTRing[pc.ringPosition]
-	clear(currentSlot)
+	//clear(currentSlot) // clearing the whole slice and then overwriting and leaving only one element untouched is inefficient - we can just overwrite the whole thing in the loops below, so no need to clear first
 
 	// Copy overlap from previous chunk
 	for i := 0; i < overlapSize; i++ {
@@ -216,6 +218,7 @@ func (pc *PartitionedConvolver) processChunk(chunk []float64, updateTail bool) [
 	for i := 0; i < L; i++ {
 		currentSlot[overlapSize+i] = complex(chunk[i], 0)
 	}
+	currentSlot[N-1] = 0 // only element neither loop touches
 
 	// FFT current block
 	fft.FftUnchecked(currentSlot, false)
@@ -223,7 +226,9 @@ func (pc *PartitionedConvolver) processChunk(chunk []float64, updateTail bool) [
 
 	// Save tail ONLY if this is a real chunk (not zero-padded)
 	if updateTail {
-		copy(pc.previousChunkTail, chunk[L-overlapSize:])
+		//copy(pc.previousChunkTail, chunk[L-overlapSize:])
+		//simplification
+		copy(pc.previousChunkTail, chunk[1:])
 	}
 
 	// Accumulate partitions - WITH COLD START PROTECTION
@@ -262,7 +267,8 @@ func (pc *PartitionedConvolver) processChunk(chunk []float64, updateTail bool) [
 	fft.FftUnchecked(pc.workResult, true)
 
 	// Extract output: discard first (L-1), keep next L
-	output := make([]float64, L)
+	output := pc.workOutput
+
 	for i := 0; i < L; i++ {
 		output[i] = real(pc.workResult[overlapSize+i])
 	}
@@ -306,9 +312,9 @@ func (pc *PartitionedConvolver) ConvolveChannel(inputSignalChannel, outputSignal
 		// Accumulate input
 		pc.Buffer = append(pc.Buffer, inputBlock...)
 
-		// Process complete 2048-sample chunks
 		for len(pc.Buffer) >= PartitionedChunkSize {
 			chunk := pc.Buffer[:PartitionedChunkSize]
+
 			processedOutput := pc.processChunk(chunk, true) // Update tail only for real chunks
 			pc.outputBuffer = append(pc.outputBuffer, processedOutput...)
 			pc.Buffer = pc.Buffer[PartitionedChunkSize:]
@@ -383,10 +389,10 @@ func (pc *PartitionedConvolver) ConvolveOverlapSave(signalBlock []float64) []flo
 	}
 
 	// Track incoming block size
-	if pc.signalBlockLength != len(signalBlock) {
+	/*if pc.signalBlockLength != len(signalBlock) {
 		pc.signalBlockLength = len(signalBlock)
 		//pc.outputLength = len(signalBlock)
-	}
+	}*/
 
 	// Initialize if needed
 	if len(pc.impulsePartitions) == 0 {
@@ -618,9 +624,10 @@ func (pc *PartitionedConvolver) GobDecode(data []byte) error {
 	pc.ringPosition = 0
 	pc.ringFilled = false
 	pc.previousChunkTail = make([]float64, PartitionedOverlapSize)
-	pc.workFFT = make([]complex128, PartitionedFFTSize)
+
+	pc.workOutput = make([]float64, PartitionedChunkSize)
 	pc.workResult = make([]complex128, PartitionedFFTSize)
-	pc.overlapTail = make([]float64, 0)
+	//pc.overlapTail = make([]float64, 0)
 	return nil
 }
 
@@ -738,12 +745,12 @@ func (pc *PartitionedConvolver) GetOutputBuffer() []float64 {
 	return buffer
 }
 
-func (pc *PartitionedConvolver) SetSignalBlockLength(signalBlockLength int) {
+/*func (pc *PartitionedConvolver) SetSignalBlockLength(signalBlockLength int) {
 	pc.signalBlockLength = signalBlockLength
 	// Set output length to match signal block length for compatibility
 	pc.outputLength = signalBlockLength
 }
-
+*/
 // Debug and warning helpers
 
 func (pc *PartitionedConvolver) debug(message string) {

@@ -1,38 +1,119 @@
+// Package foxFFT provides a Cooley-Tukey FFT optimised for use inside a
+// partitioned convolver whose block size is fixed at either 4096 (44.1/48 kHz)
+// or 8192 (88.2/96 kHz) complex samples.
+//
+// Hot-path design decisions
+//   - Both plans are fully built at init() — zero allocation during FFT calls.
+//   - Per-stage twiddle slices are indexed sequentially (tw[k]) so the inner
+//     loop streams through memory rather than striding with k*step.
+//   - Stages 1+2 are fused into a single radix-4 pass (no twiddle lookups).
+//   - Stage 3 is unrolled with hard-coded roots of unity (no twiddle lookups).
+//   - IFFT uses the conj/FFT/conj identity — two sequential passes instead of
+//     the reversal loop, which is cache-hostile at these sizes.
+//   - The fallback path for arbitrary power-of-two sizes is retained but uses
+//     sync.Once + a fixed array instead of a RWMutex + map.
 package foxFFT
 
 import (
 	"fmt"
 	"math"
 	"math/bits"
-	"math/cmplx"
 	"sync"
 )
 
 const packageName = "foxFFT"
 
+// Supported convolver FFT sizes.
+const (
+	FFTSize44k  = 4096 // 44.1 kHz / 48 kHz partitions // 88.2 kHz / 96 kHz partitions
+	FFTSize192k = 8192 // 176.4 kHz / 192 kHz partitions
+)
+
+// invsqrt2 = 1/√2, used in the hard-coded 8-point butterfly stage.
+const invsqrt2 = 0.7071067811865476
+
+// ─── Plan ────────────────────────────────────────────────────────────────────
+
+// fftPlan holds pre-computed twiddle factors for one fixed FFT size.
+//
+// Stages covered by the plan:
+//
+//	n=1,2  → fused radix-4 block   (no twiddles needed)
+//	n=4    → hard-coded 8-pt block (no twiddles needed)
+//	n=8…N/2→ stageTwiddles[i], where i=0 ↔ n=8
+//
+// Each stageTwiddles[i] has length n and is indexed sequentially: tw[k] is the
+// twiddle for butterfly index k at that stage. This replaces the original
+// strided access twiddles[k*step] and keeps the inner loop cache-friendly.
+type fftPlan struct {
+	N             int
+	stageTwiddles [][]complex128
+}
+
+// Plans are constructed once at package init — never written to again.
+var (
+	plan4096 = buildPlan(FFTSize44k)
+	plan8192 = buildPlan(FFTSize192k)
+)
+
+// buildPlan pre-computes sequential per-stage twiddle slices for size N.
+// The first three stages (n=1,2,4) are handled inline, so we start at n=8.
+func buildPlan(N int) fftPlan {
+	// Total general stages: log2(N) − 1 butterfly stages, minus 3 inlined.
+	// n iterates 8, 16, 32 … N/2  →  log2(N)−4 slices.
+	stages := make([][]complex128, 0, bits.Len64(uint64(N))-4)
+	for n := 8; n < N; n <<= 1 {
+		m := n << 1
+		tw := make([]complex128, n)
+		for k := 0; k < n; k++ {
+			s, c := math.Sincos(-2 * math.Pi * float64(k) / float64(m))
+			tw[k] = complex(c, s)
+		}
+		stages = append(stages, tw)
+	}
+	return fftPlan{N: N, stageTwiddles: stages}
+}
+
+// getPlan returns the pre-built plan for the two supported sizes, or nil.
+func getPlan(N int) *fftPlan {
+	switch N {
+	case FFTSize44k:
+		return &plan4096
+	case FFTSize192k:
+		return &plan8192
+	default:
+		return nil
+	}
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+// Fft performs an in-place FFT (forward or inverse) on x.
+// len(x) must be a power of two.
 func Fft(x []complex128, inverse bool) error {
-	if err := checkLength("FFT Input", len(x)); err != nil {
+	if err := checkLength("FFT input", len(x)); err != nil {
 		return err
 	}
 	if inverse {
 		ifft128(x)
 	} else {
-		fft128enhanced(x)
+		fft128(x)
 	}
 	return nil
 }
 
+// FftUnchecked is identical to Fft but skips the length check.
+// Use in the convolver inner loop where the size is guaranteed correct.
 func FftUnchecked(x []complex128, inverse bool) error {
-
 	if inverse {
 		ifft128(x)
 	} else {
-		fft128enhanced(x)
+		fft128(x)
 	}
 	return nil
 }
 
-// FFT package functions
+// ─── Bit-reversal permutation ────────────────────────────────────────────────
 
 func permute(x []complex128) {
 	N := len(x)
@@ -61,152 +142,165 @@ func permute(x []complex128) {
 	}
 }
 
-// ===========================================
-// 2. CACHE-OPTIMIZED FFT WITH BLOCK PROCESSING
-// ===========================================
-// Cache line size in bytes (64 bytes = 8 complex128)
-const cacheLineComplex = 8
+// ─── Forward FFT ─────────────────────────────────────────────────────────────
 
-var twiddleCache = make(map[int][]complex128)
-var twiddleCacheLock sync.RWMutex
-
-func getTwiddles(N int) []complex128 {
-	twiddleCacheLock.RLock()
-	if twiddles, ok := twiddleCache[N]; ok {
-		twiddleCacheLock.RUnlock()
-		return twiddles
-	}
-	twiddleCacheLock.RUnlock()
-
-	twiddleCacheLock.Lock()
-	defer twiddleCacheLock.Unlock()
-
-	if twiddles, ok := twiddleCache[N]; ok {
-		return twiddles
-	}
-
-	twiddles := make([]complex128, N)
-	// Use math.Sincos - it's measurably faster than separate Cos/Sin
-	for k := 0; k < N; k++ {
-		angle := -2 * math.Pi * float64(k) / float64(N)
-		sin, cos := math.Sincos(angle) // Single function call
-		twiddles[k] = complex(cos, sin)
-	}
-
-	twiddleCache[N] = twiddles
-	return twiddles
-}
-
-//===========================
-
-func IsPow2(N int) bool {
-	if N == 0 {
-		return false
-	}
-	return (uint64(N) & uint64(N-1)) == 0
-}
-
-func checkLength(Context string, N int) error {
-	if !IsPow2(N) {
-		return fmt.Errorf("%s must be a power of 2, got %d", Context, N)
-	}
-	return nil
-}
-
-// Instead of w = cmplx.Sqrt(w) in loop
-// Pre-compute all needed roots of unity
-
-func fft128enhanced(x []complex128) {
+func fft128(x []complex128) {
 	N := len(x)
+
+	if N == 1 {
+		return // single sample — FFT is the identity, nothing to do
+	}
+	if N == 2 {
+		x[0], x[1] = x[0]+x[1], x[0]-x[1] // length-2 butterfly
+		return
+	}
 
 	permute(x)
 
-	// First 2 steps
+	// ── Stage 1 + 2 fused: radix-4 butterfly ─────────────────────────────
+	// Combines the length-2 and length-4 butterfly passes.
+	// The twiddle for the length-4 pass at k=1 is e^{-iπ/2} = −i, so the
+	// multiply becomes a 90° rotation: (a+bi)*(−i) = (b − ai).
 	for i := 0; i < N; i += 4 {
-		f := complex(imag(x[i+2])-imag(x[i+3]), real(x[i+3])-real(x[i+2]))
-		x[i], x[i+1], x[i+2], x[i+3] = x[i]+x[i+1]+x[i+2]+x[i+3], x[i]-x[i+1]+f, x[i]-x[i+2]+x[i+1]-x[i+3], x[i]-x[i+1]-f
+		a, b, c, d := x[i], x[i+1], x[i+2], x[i+3]
+		// f = (c − d) * (−i)  →  swap re/im and negate new imaginary part
+		f := complex(imag(c)-imag(d), real(d)-real(c))
+		x[i] = a + b + c + d
+		x[i+1] = a - b + f
+		x[i+2] = a - c + b - d
+		x[i+3] = a - b - f
 	}
 
-	twiddles := getTwiddles(N)
+	if N < 8 {
+		return
+	}
 
-	for n := 4; n < N; n <<= 1 {
-		m := n << 1
-		step := N / m
-		for o := 0; o < N; o += m {
-			for k := 0; k < n; k++ {
-				i := k + o
-				f := twiddles[k*step] * x[i+n]
-				x[i], x[i+n] = x[i]+f, x[i]-f
+	// ── Stage 3: hard-coded 8-point butterfly ─────────────────────────────
+	// Twiddles for k = 0..3 at half-size n=4 (full-size m=8):
+	//   k=0: w = 1
+	//   k=1: w = (1−i)/√2
+	//   k=2: w = −i
+	//   k=3: w = (−1−i)/√2
+	for i := 0; i < N; i += 8 {
+		// k=0: multiply by 1 — just a butterfly
+		u, v := x[i], x[i+4]
+		x[i], x[i+4] = u+v, u-v
+
+		// k=1: multiply x[i+5] by (1−i)/√2
+		//   (a+bi)(1−i)/√2 = ((a+b) + (b−a)i) / √2
+		u = x[i+1]
+		r5, m5 := real(x[i+5]), imag(x[i+5])
+		v = complex((r5+m5)*invsqrt2, (m5-r5)*invsqrt2)
+		x[i+1], x[i+5] = u+v, u-v
+
+		// k=2: multiply x[i+6] by −i
+		//   (a+bi)(−i) = b − ai
+		u = x[i+2]
+		v = complex(imag(x[i+6]), -real(x[i+6]))
+		x[i+2], x[i+6] = u+v, u-v
+
+		// k=3: multiply x[i+7] by (−1−i)/√2
+		//   (a+bi)(−1−i)/√2 = ((b−a) + (−a−b)i) / √2
+		u = x[i+3]
+		r7, m7 := real(x[i+7]), imag(x[i+7])
+		v = complex((m7-r7)*invsqrt2, (-r7-m7)*invsqrt2)
+		x[i+3], x[i+7] = u+v, u-v
+	}
+
+	if N <= 8 {
+		return
+	}
+
+	// ── General butterfly stages: n = 8, 16, … N/2 ───────────────────────
+	plan := getPlan(N)
+	if plan != nil {
+		// Fast path: sequential per-stage twiddles, no map/lock overhead.
+		// tw[k] is the exact twiddle for butterfly index k at this stage.
+		for si, tw := range plan.stageTwiddles {
+			n := 8 << uint(si)
+			m := n << 1
+			for o := 0; o < N; o += m {
+				xo := x[o : o+m] // sub-slice avoids repeated base+offset arithmetic
+				for k := 0; k < n; k++ {
+					f := tw[k] * xo[k+n]
+					xo[k], xo[k+n] = xo[k]+f, xo[k]-f
+				}
+			}
+		}
+	} else {
+		// Fallback: arbitrary power-of-two size.
+		// Uses the original strided-twiddle approach via the fallback cache.
+		twiddles := getTwiddlesFallback(N)
+		for n := 8; n < N; n <<= 1 {
+			m := n << 1
+			step := N / m
+			for o := 0; o < N; o += m {
+				for k := 0; k < n; k++ {
+					i := k + o
+					f := twiddles[k*step] * x[i+n]
+					x[i], x[i+n] = x[i]+f, x[i]-f
+				}
 			}
 		}
 	}
 }
 
-// fft does the actual work for FFT
+// ─── Inverse FFT ─────────────────────────────────────────────────────────────
 
+// ifft128 uses the identity  IFFT(x) = conj(FFT(conj(x))) / N.
+//
+// This replaces the original reversal loop, which touched N/2 non-sequential
+// element pairs and was cache-hostile at 4096/8192 elements. Two sequential
+// passes (conjugate in, conjugate+scale out) are strictly more cache-friendly.
 func ifft128(x []complex128) {
-	N := len(x)
-	// Reverse using XOR swap (slightly faster, no temp needed)
-	for i := 1; i < N/2; i++ {
-		j := N - i
-		x[i], x[j] = x[j], x[i]
-	}
-
-	fft128enhanced(x)
-
-	// Scale - compiler will optimize division by constant better
-	invN := 1.0 / float64(N)
+	// Pass 1: conjugate input
 	for i := range x {
-		x[i] = complex(real(x[i])*invN, imag(x[i])*invN)
+		x[i] = complex(real(x[i]), -imag(x[i]))
+	}
+
+	fft128(x)
+
+	// Pass 2: conjugate output and scale
+	invN := 1.0 / float64(len(x))
+	for i := range x {
+		x[i] = complex(real(x[i])*invN, -imag(x[i])*invN)
 	}
 }
 
-// TukeyFFT simple Cooley-Tukey based FFT
-func TukeyFFT(X []complex128) []complex128 {
-	N := len(X)
-	if N <= 1 {
-		return X
-	}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-	// Divide
-	even := make([]complex128, N/2)
-	odd := make([]complex128, N/2)
-	for i := 0; i < N/2; i++ {
-		even[i] = X[i*2]
-		odd[i] = X[i*2+1]
-	}
-
-	// Conquer
-	T := TukeyFFT(even)
-	U := TukeyFFT(odd)
-	x := make([]complex128, N)
-	// Combine
-	for i := 0; i < N/2; i++ {
-		t := cmplx.Rect(1, -2*math.Pi*float64(i)/float64(N)) * U[i]
-		x[i] = T[i] + t
-		x[i+N/2] = T[i] - t
-	}
-
-	return x
+// IsPow2 reports whether N is a positive power of two.
+func IsPow2(N int) bool {
+	return N > 0 && (uint64(N)&uint64(N-1)) == 0
 }
 
-// InverseTukeyFFT simple Cooley-Tukey based inverse FFT
-func InverseTukeyFFT(X []complex128) []complex128 {
-	N := len(X)
-	x := make([]complex128, N)
-
-	// Take the conjugate of the input sequence
-	for i := 0; i < N; i++ {
-		x[i] = cmplx.Conj(X[i])
+func checkLength(ctx string, N int) error {
+	if !IsPow2(N) {
+		return fmt.Errorf("%s: length must be a power of 2, got %d", ctx, N)
 	}
+	return nil
+}
 
-	// Compute the FFT of the conjugated sequence
-	x = TukeyFFT(x)
+// ─── Fallback twiddle cache (non-convolver sizes) ─────────────────────────────
+//
+// Indexed by log2(N) so lookup is O(1) with no hashing.
+// sync.Once guarantees each entry is computed at most once without holding a
+// lock on every read — unlike the original RWMutex + map approach.
 
-	// Take the conjugate of the result and normalize
-	for i := 0; i < N; i++ {
-		x[i] = cmplx.Conj(x[i]) / complex(float64(N), 0)
-	}
+var (
+	twiddleFallback     [33][]complex128
+	twiddleFallbackOnce [33]sync.Once
+)
 
-	return x
+func getTwiddlesFallback(N int) []complex128 {
+	idx := bits.Len64(uint64(N)) - 1 // log2(N)
+	twiddleFallbackOnce[idx].Do(func() {
+		tw := make([]complex128, N)
+		for k := 0; k < N; k++ {
+			s, c := math.Sincos(-2 * math.Pi * float64(k) / float64(N))
+			tw[k] = complex(c, s)
+		}
+		twiddleFallback[idx] = tw
+	})
+	return twiddleFallback[idx]
 }

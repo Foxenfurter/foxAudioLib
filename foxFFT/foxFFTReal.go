@@ -121,11 +121,21 @@ import (
 
 // RealFFTSize44k is the real input length whose complex FFT fits the 44.1/48
 // kHz convolver plan (FFTSize44k = 4096 complex → 2048-point complex FFT).
-const RealFFTSize44k = 4096
+
 
 // RealFFTSize96k is the real input length whose complex FFT fits the 88.2/96
 // kHz convolver plan (FFTSize96k = 8192 complex → 4096-point complex FFT).
-const RealFFTSize96k = 8192
+
+const (
+    RealFFTSize256   = 256
+    RealFFTSize512   = 512
+    RealFFTSize1024  = 1024
+    RealFFTSize2048  = 2048
+    RealFFTSize4096  = 4096  // RealFFTSize44k
+    RealFFTSize8192  = 8192  // RealFFTSize192k
+)
+
+
 
 // ─── Real FFT plan ───────────────────────────────────────────────────────────
 
@@ -139,11 +149,15 @@ type realFFTPlan struct {
 }
 
 // plan for N/2=2048 (used by the 4096-real plan)
-var plan2048 = buildPlan(2048)
+//var plan2048 = buildPlan(2048)
 
 var (
-	realPlan4096 = buildRealFFTPlan(RealFFTSize44k)
-	realPlan8192 = buildRealFFTPlan(RealFFTSize96k)
+    realPlan256  = buildRealFFTPlan(RealFFTSize256)
+    realPlan512  = buildRealFFTPlan(RealFFTSize512)
+    realPlan1024 = buildRealFFTPlan(RealFFTSize1024)
+    realPlan2048 = buildRealFFTPlan(RealFFTSize2048)
+    realPlan4096 = buildRealFFTPlan(RealFFTSize4096)
+    realPlan8192 = buildRealFFTPlan(RealFFTSize8192)
 )
 
 func buildRealFFTPlan(N int) realFFTPlan {
@@ -157,52 +171,78 @@ func buildRealFFTPlan(N int) realFFTPlan {
 }
 
 func getRealPlan(N int) *realFFTPlan {
-	switch N {
-	case RealFFTSize44k:
-		return &realPlan4096
-	case RealFFTSize96k:
-		return &realPlan8192
-	default:
-		return nil
-	}
+    switch N {
+    case RealFFTSize256:
+        return &realPlan256
+    case RealFFTSize512:
+        return &realPlan512
+    case RealFFTSize1024:
+        return &realPlan1024
+    case RealFFTSize2048:
+        return &realPlan2048
+    case RealFFTSize4096:
+        return &realPlan4096
+    case RealFFTSize8192:
+        return &realPlan8192
+    default:
+        return nil
+    }
 }
 
 // ─── Work-buffer pool ────────────────────────────────────────────────────────
 //
 // Avoids per-call allocation in the convolver inner loop.
-// Two pool sizes cover both supported real FFT sizes.
+// the following pool sizes cover all needed  real FFT sizes.
 
 var (
-	workPool2048 = sync.Pool{New: func() any {
-		buf := make([]complex128, 2048)
-		return &buf
-	}}
-	workPool4096 = sync.Pool{New: func() any {
-		buf := make([]complex128, 4096)
-		return &buf
-	}}
+    workPool64   = sync.Pool{New: func() any { buf := make([]complex128, 64);   return &buf }}
+    workPool128  = sync.Pool{New: func() any { buf := make([]complex128, 128);  return &buf }}
+    workPool256  = sync.Pool{New: func() any { buf := make([]complex128, 256);  return &buf }}
+    workPool512  = sync.Pool{New: func() any { buf := make([]complex128, 512);  return &buf }}
+    workPool1024 = sync.Pool{New: func() any { buf := make([]complex128, 1024); return &buf }}
+    workPool2048 = sync.Pool{New: func() any { buf := make([]complex128, 2048); return &buf }}
+    workPool4096 = sync.Pool{New: func() any { buf := make([]complex128, 4096); return &buf }}
 )
 
 func getWorkBuf(M int) *[]complex128 {
-	switch M {
-	case 2048:
-		return workPool2048.Get().(*[]complex128)
-	case 4096:
-		return workPool4096.Get().(*[]complex128)
-	default:
-		buf := make([]complex128, M)
-		return &buf
-	}
+    switch M {
+    case 64:
+        return workPool64.Get().(*[]complex128)
+    case 128:
+        return workPool128.Get().(*[]complex128)
+    case 256:
+        return workPool256.Get().(*[]complex128)
+    case 512:
+        return workPool512.Get().(*[]complex128)
+    case 1024:
+        return workPool1024.Get().(*[]complex128)
+    case 2048:
+        return workPool2048.Get().(*[]complex128)
+    case 4096:
+        return workPool4096.Get().(*[]complex128)
+    default:
+        buf := make([]complex128, M)
+        return &buf
+    }
 }
 
 func putWorkBuf(M int, p *[]complex128) {
-	switch M {
-	case 2048:
-		workPool2048.Put(p)
-	case 4096:
-		workPool4096.Put(p)
-	}
-	// Non-pool sizes: let GC collect.
+    switch M {
+    case 64:
+        workPool64.Put(p)
+    case 128:
+        workPool128.Put(p)
+    case 256:
+        workPool256.Put(p)
+    case 512:
+        workPool512.Put(p)
+    case 1024:
+        workPool1024.Put(p)
+    case 2048:
+        workPool2048.Put(p)
+    case 4096:
+        workPool4096.Put(p)
+    }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

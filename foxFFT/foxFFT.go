@@ -25,10 +25,14 @@ const packageName = "foxFFT"
 
 // Supported convolver FFT sizes.
 const (
-	FFTSize44k  = 4096 // 44.1 kHz / 48 kHz partitions // 88.2 kHz / 96 kHz partitions
-	FFTSize192k = 8192 // 176.4 kHz / 192 kHz partitions
+    FFTSize128   = 128
+    FFTSize256   = 256
+    FFTSize512   = 512
+    FFTSize1024  = 1024
+    FFTSize2048  = 2048
+    FFTSize4096  = 4096  // FFTSize44k
+    FFTSize8192  = 8192  // FFTSize192k
 )
-
 // invsqrt2 = 1/√2, used in the hard-coded 8-point butterfly stage.
 const invsqrt2 = 0.7071067811865476
 
@@ -51,10 +55,17 @@ type fftPlan struct {
 }
 
 // Plans are constructed once at package init — never written to again.
+
 var (
-	plan4096 = buildPlan(FFTSize44k)
-	plan8192 = buildPlan(FFTSize192k)
+    plan128  = buildPlan(FFTSize128)
+    plan256  = buildPlan(FFTSize256)
+    plan512  = buildPlan(FFTSize512)
+    plan1024 = buildPlan(FFTSize1024)
+    plan2048 = buildPlan(FFTSize2048)
+    plan4096 = buildPlan(FFTSize4096)
+    plan8192 = buildPlan(FFTSize8192)
 )
+
 
 // buildPlan pre-computes sequential per-stage twiddle slices for size N.
 // The first three stages (n=1,2,4) are handled inline, so we start at n=8.
@@ -76,14 +87,24 @@ func buildPlan(N int) fftPlan {
 
 // getPlan returns the pre-built plan for the two supported sizes, or nil.
 func getPlan(N int) *fftPlan {
-	switch N {
-	case FFTSize44k:
-		return &plan4096
-	case FFTSize192k:
-		return &plan8192
-	default:
-		return nil
-	}
+    switch N {
+    case FFTSize128:
+        return &plan128
+    case FFTSize256:
+        return &plan256
+    case FFTSize512:
+        return &plan512
+    case FFTSize1024:
+        return &plan1024
+    case FFTSize2048:
+        return &plan2048
+    case FFTSize4096:
+        return &plan4096
+    case FFTSize8192:
+        return &plan8192
+    default:
+        return nil
+    }
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

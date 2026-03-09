@@ -13,7 +13,7 @@ import (
 	"io"
 	"math"
 	"math/bits"
-	"reflect"
+
 	"strconv"
 	"sync"
 	"unsafe"
@@ -24,21 +24,22 @@ import (
 // Structure holds basic information about the Samples to be encoded
 // this is a type neutral representation of the WavHeader structure
 type WavReader struct {
-	SampleRate     int
-	BitDepth       int
-	NumChannels    int
-	Size           uint32
-	ReaderCursor   int
-	LittleEndian   bool
-	ByteOrder      binary.ByteOrder
-	wordLength     int
-	bytesPerSample int
-	Input          io.Reader // Changed from *os.File to io.Reader to *bufio.Reader back to io.Reader
-	AudioFormat    WaveFormat
-	DebugFunc      func(string)
-	TotalSamples   int64
+	SampleRate      int
+	BitDepth        int
+	NumChannels     int
+	Size            uint32
+	ReaderCursor    int
+	LittleEndian    bool
+	ByteOrder       binary.ByteOrder
+	wordLength      int
+	bytesPerSample  int
+	Input           io.Reader // Changed from *os.File to io.Reader to *bufio.Reader back to io.Reader
+	AudioFormat     WaveFormat
+	DebugFunc       func(string)
+	TotalSamples    int64
+	TargetFrameSize int
 	// additional for PCM
-	leftoverBytes    []byte
+
 	RawPeak          float64
 	IgnoreDataLength bool
 	Length           uint32
@@ -151,11 +152,7 @@ const scale16Bit float64 = 1 / 32768.0
 const scale24Bit float64 = 1 / 8388608.0
 const scale32Bit float64 = 1 / 2147483648.0
 
-var samplebyte byte
-var sampleINT16 int16
-var sampleINT32 int32
-var sampleFLOAT32 float32
-var sampleFLOAT64 float64
+const processingBufferMultiple = 3 // hold 3× target to absorb read jitter
 
 const maxDataSize uint32 = math.MaxUint32
 
@@ -170,8 +167,9 @@ func (FD *WavReader) ConvertBytesToFloat64(myBytes []byte) ([][]float64, error) 
 	}
 
 	var rawPeak float64
-	header := *(*reflect.SliceHeader)(unsafe.Pointer(&myBytes))
-	dataPtr := unsafe.Pointer(header.Data)
+	//header := *(*reflect.SliceHeader)(unsafe.Pointer(&myBytes))
+	//dataPtr := unsafe.Pointer(header.Data)
+	dataPtr := unsafe.Pointer(unsafe.SliceData(myBytes))
 
 	switch FD.BitDepth {
 	case 8:
@@ -292,45 +290,49 @@ func (FD *WavReader) convert24Bit(dataPtr unsafe.Pointer, samples [][]float64, n
 
 func (FD *WavReader) convert32Bit(dataPtr unsafe.Pointer, samples [][]float64, numSamples int, rawPeak *float64, lenmyBytes int) {
 	const bytesPerSample = 4
-	step := bytesPerSample * FD.NumChannels // Total bytes per frame (all channels)
+	step := bytesPerSample * FD.NumChannels // bytes per full frame
 	start := uintptr(dataPtr)
 
-	// Pre-calculate maximum allowed offset to avoid per-sample checks
-	maxOffset := lenmyBytes - bytesPerSample
+	// Loop over channels first (like the 64-bit version)
+	for c := 0; c < FD.NumChannels; c++ {
+		// Start of this channel's first sample
+		chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(c*bytesPerSample))
+		channel := samples[c] // assumes slices are correctly sized
 
-	for s := 0; s < numSamples; s++ {
-		// Process all channels for this sample first
-		for c := 0; c < FD.NumChannels; c++ {
-			chanPtr := unsafe.Pointer(uintptr(dataPtr) + uintptr(s*step) + uintptr(c*bytesPerSample))
+		for s := 0; s < numSamples; s++ {
+			// Safety: ensure we don't read beyond the buffer
 			offset := uintptr(chanPtr) - start
-
-			// Safety check for entire sample block
-			if offset > uintptr(maxOffset) || c >= len(samples) {
+			if int(offset)+bytesPerSample > lenmyBytes {
 				return
 			}
 
 			var converted float64
 			if FD.AudioFormat == PCM {
-				// Handle 32-bit signed integer (PCM)
+				// 32-bit signed integer PCM
 				raw := binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:])
-				if !FD.LittleEndian { // Handle big-endian PCM if needed
+				if !FD.LittleEndian {
 					raw = bits.ReverseBytes32(raw)
 				}
-				converted = float64(int32(raw)) * (1.0 / 2147483648.0)
+				converted = float64(int32(raw)) * scale32Bit
 			} else {
-				// Handle 32-bit float (IEEE_FLOAT)
+				// 32-bit IEEE float
 				raw := binary.LittleEndian.Uint32((*[4]byte)(chanPtr)[:])
-				if !FD.LittleEndian { // Handle big-endian float
+				if !FD.LittleEndian {
 					raw = bits.ReverseBytes32(raw)
 				}
 				converted = float64(math.Float32frombits(raw))
 			}
 
-			// Update peak and store sample
+			// Update peak
 			if abs := math.Abs(converted); abs > *rawPeak {
 				*rawPeak = abs
 			}
-			samples[c][s] = converted
+
+			// Store sample
+			channel[s] = converted
+
+			// Move to the next sample of the same channel
+			chanPtr = unsafe.Pointer(uintptr(chanPtr) + uintptr(step))
 		}
 	}
 }
@@ -370,15 +372,22 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	if bytesPerFrame == 0 {
 		return fmt.Errorf("invalid bytesPerFrame (BitDepth=%d)", FD.BitDepth)
 	}
-	targetFrames := FD.SampleRate / 10
+	targetFrames := FD.TargetFrameSize
+	if targetFrames == 0 {
+		targetFrames = FD.SampleRate / 10 // fallback default
+	}
 	targetBytes := targetFrames * bytesPerFrame
-	processingBufferSize := targetBytes * 3
+
+	processingBufferSize := targetBytes * processingBufferMultiple
 	processingBufferSize = (processingBufferSize / bytesPerFrame) * bytesPerFrame
 	if processingBufferSize < bytesPerFrame {
 		processingBufferSize = bytesPerFrame
 	}
 
-	bufferedInput := bufio.NewReaderSize(FD.Input, 8192)
+	bufferedInput, ok := FD.Input.(*bufio.Reader)
+	if !ok {
+		return fmt.Errorf("DecodeInput: Input is not a *bufio.Reader")
+	}
 	processingBuffer := make([]byte, processingBufferSize)
 	filledBytes := 0
 	maxDataSize := int(FD.Size)
@@ -463,7 +472,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 			break
 		}
 	}
-
+	FD.TotalSamples = TotalFrames
 	FD.debug(MsgHeader + fmt.Sprintf("Decoded %d frames", TotalFrames))
 	return nil
 }
@@ -661,26 +670,6 @@ func decodeIEEEExtended(b []byte) (float64, error) {
 	// The exponent is biased by 16383.
 	// The mantissa is scaled by 2^63
 	return sign * float64(mantissa) / math.Pow(2, 63) * math.Pow(2, float64(exponent-16383)), nil
-}
-
-func decodeIEEEExtendedOld(b []byte) (float64, error) {
-
-	commonRates := map[string]float64{
-		"\x40\x0E\xAC\x44\x00\x00\x00\x00\x00\x00": 44100.0,
-		"\x40\x0E\xBB\x80\x00\x00\x00\x00\x00\x00": 48000.0,
-		"\x40\x0F\x57\x20\x00\x00\x00\x00\x00\x00": 88200.0,
-		"\x40\x0F\x5E\x00\x00\x00\x00\x00\x00\x00": 96000.0,
-		"\x40\x10\xAE\x40\x00\x00\x00\x00\x00\x00": 176400.0,
-		"\x40\x10\xBC\x00\x00\x00\x00\x00\x00\x00": 192000.0,
-	}
-
-	// Convert byte slice to string key for comparison
-	key := string(b)
-	if rate, found := commonRates[key]; found {
-		return rate, nil
-	}
-
-	return 0, fmt.Errorf("decodeIEEEExtended: unsupported or unrecognized 10-byte IEEE extended float pattern: %X", b)
 }
 
 // Read Wav File Header

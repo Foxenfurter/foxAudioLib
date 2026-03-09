@@ -18,32 +18,26 @@ import (
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 	"github.com/Foxenfurter/foxAudioLib/foxLog"
+	"github.com/Foxenfurter/foxAudioLib/foxUtils"
 )
 
 const packageName = "foxAudioDecoder"
 
-// The input Buffer is used to read in byte date from the external source
-const InputBufferSize = 64000 // I don't think this is used anywhere
-
-// The DecoderFrameSize is the number of frame samples to output ian each frame.
-// A frame being an arbitrary number of frame samples and a frame sample being  n channels of samples e.g. stereo is 2 single samples.
-const DefaultDecoderFrameSize int = 1000 // I don't think this is used anywhere
-
 type AudioDecoder struct {
-	SampleRate   int
-	BitDepth     int
-	NumChannels  int
-	BigEndian    bool
-	Size         int64 // Size of the audio data
-	Type         string
-	Filename     string // Added for file reading
-	File         *os.File
-	WavDecoder   *foxWavReader.WavReader
-	FrameSample  int
-	TotalSamples int64
-	DebugFunc    func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
-	RawPeak      float64
-	TimeStamp    string
+	SampleRate      int
+	BitDepth        int
+	NumChannels     int
+	BigEndian       bool
+	Size            int64 // Size of the audio data
+	Type            string
+	Filename        string // Added for file reading
+	File            *os.File
+	WavDecoder      *foxWavReader.WavReader
+	TargetFrameSize int
+	TotalSamples    int64
+	DebugFunc       func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
+	RawPeak         float64
+	TimeStamp       string
 }
 
 // NewDecoder creates a new decoder with implicit file opening or Stdin setup
@@ -52,7 +46,7 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	// We need to be able to read the header in the filestream before we do any processing
 	// we are going to peak this and 1000 bytes should cover almost all formats.
 	if myDecoder.DebugFunc != nil {
-		myDecoder.DebugFunc(packageName + ":" + functionName + ": Initialising...")
+		myDecoder.debug(packageName + ":" + functionName + ": Initialising...")
 	}
 
 	//var myFile *os.File
@@ -88,11 +82,8 @@ func (myDecoder *AudioDecoder) Initialise() error {
 	// Decide which encoder to use
 	switch strings.ToUpper(myDecoder.Type) {
 	case "WAV":
-		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		// reading data from source
-		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myDecoder.File, 8192)
-		//myDecoder.WavDecoder.Input = myFile
-		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
+		initWavDecoder(myDecoder)
+
 		//Init the header
 		err := myDecoder.WavDecoder.DecodeWavHeader()
 		if err != nil {
@@ -103,15 +94,15 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.SampleRate = int(myDecoder.WavDecoder.SampleRate)
 		myDecoder.NumChannels = int(myDecoder.WavDecoder.NumChannels)
 
-		// If the input buffer is bigger then 2000 than piping in through std in seems to cause issues for the upstream app
-		// hence setting buffer size to too
-		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
-		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
 		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
+		if myDecoder.TargetFrameSize == 0 {
+			myDecoder.TargetFrameSize = myDecoder.SampleRate / 10
+		}
+		myDecoder.WavDecoder.TargetFrameSize = myDecoder.TargetFrameSize
+
 	case "PCM":
-		myDecoder.WavDecoder = &foxWavReader.WavReader{}
-		myDecoder.WavDecoder.Input = bufio.NewReaderSize(myDecoder.File, 8192)
-		myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
+		initWavDecoder(myDecoder)
+
 		//Do not Init the header instead we will have received the necessary header information as arguments
 
 		myDecoder.WavDecoder.BitDepth = int(myDecoder.BitDepth)
@@ -125,11 +116,12 @@ func (myDecoder *AudioDecoder) Initialise() error {
 			myDecoder.WavDecoder.LittleEndian = true
 		}
 		myDecoder.WavDecoder.IgnoreDataLength = true
-		// If the input buffer is bigger then 2000 than piping in through std in seems to cause issues for the upstream app
-		// hence setting buffer size to too
-		myMultiple := int(1200 / ((myDecoder.BitDepth / 8) * myDecoder.NumChannels))
-		myDecoder.FrameSample = (myDecoder.BitDepth / 8) * myDecoder.NumChannels * myMultiple
+
 		myDecoder.Size = int64(myDecoder.WavDecoder.GetMaxDataSize())
+		if myDecoder.TargetFrameSize == 0 {
+			myDecoder.TargetFrameSize = myDecoder.SampleRate / 10
+		}
+		myDecoder.WavDecoder.TargetFrameSize = myDecoder.TargetFrameSize
 
 	default:
 		errorText := "unsupported encoder type "
@@ -138,10 +130,24 @@ func (myDecoder *AudioDecoder) Initialise() error {
 
 	// It is important that the low level decoder packages support these setter functions
 
-	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] FrameSample [%v]",
-		myDecoder.SampleRate, myDecoder.NumChannels, myDecoder.BitDepth, myDecoder.Size, myDecoder.FrameSample))
+	myDecoder.debug(fmt.Sprintf(packageName+":"+functionName+" SampleRate: [%v] Channels: [%v] BitDepth: [%v] Size [%v] TargetFrameSize [%v]",
+		myDecoder.SampleRate, myDecoder.NumChannels, myDecoder.BitDepth, myDecoder.Size, myDecoder.TargetFrameSize))
 
 	return nil
+}
+
+func initWavDecoder(myDecoder *AudioDecoder) {
+	myDecoder.WavDecoder = &foxWavReader.WavReader{}
+	myDecoder.WavDecoder.Input = bufio.NewReaderSize(myDecoder.File, 8192)
+	myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
+
+}
+
+func (myDecoder *AudioDecoder) ConfigureFrameSize(mode foxUtils.ProcessingMode) {
+	myDecoder.TargetFrameSize = foxUtils.CalculateChunkSize(myDecoder.SampleRate, mode)
+	if myDecoder.WavDecoder != nil {
+		myDecoder.WavDecoder.TargetFrameSize = myDecoder.TargetFrameSize
+	}
 }
 
 func (myDecoder *AudioDecoder) Close() error {
@@ -161,20 +167,13 @@ func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]floa
 	const functionName = "DecodeSamples"
 	var err error
 	switch strings.ToUpper(myDecoder.Type) {
-	case "WAV":
+	case "WAV", "PCM":
 		err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
 
-	case "PCM":
-
-		err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
-
-		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
-		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
-		return err
 	default:
 		errorText := "unsupported encoder type "
 		return errors.New(packageName + ":" + functionName + ":" + errorText)
@@ -214,59 +213,42 @@ func (myInputDecoder *AudioDecoder) LoadFiletoSampleBuffer(inputFile string, fil
 	outputSamples := make([][]float64, myInputDecoder.NumChannels)
 	var WG sync.WaitGroup
 	DecodedSamplesChannel := make(chan [][]float64, 1)
+	var decodeErr error
+	var errMu sync.Mutex // guards decodeErr if you ever add more writers
 
 	WG.Add(1)
 	go func() {
 		defer func() {
-			close(DecodedSamplesChannel) // Close the channel after decoding
+			close(DecodedSamplesChannel)
 			WG.Done()
 		}()
-		err := myInputDecoder.DecodeSamples(DecodedSamplesChannel)
-		if err != nil {
-			myLogger.Error(MsgHeader + "Decoder failed: " + err.Error())
-			return
-		} else {
-			//myLogger.Debug(MsgHeader + fmt.Sprintf(" number of samples decoded %v", myFilterDecoder.TotalSamples))
+		if err := myInputDecoder.DecodeSamples(DecodedSamplesChannel); err != nil {
+			errMu.Lock()
+			decodeErr = err
+			errMu.Unlock()
 		}
 	}()
 
 	WG.Add(1)
 	go func() {
 		defer WG.Done()
-
 		for i := range outputSamples {
 			outputSamples[i] = make([]float64, 0)
 		}
-		//myLogger.Debug(MsgHeader + " Structure built now build output Samples...")
 		for samples := range DecodedSamplesChannel {
 			for channelIdx, channelData := range samples {
 				outputSamples[channelIdx] = append(outputSamples[channelIdx], channelData...)
 			}
 		}
-
 	}()
 
 	WG.Wait()
 
-	if myInputDecoder.DebugFunc != nil {
-		myInputDecoder.debug(MsgHeader + fmt.Sprintf("File decoded: SampleRate=%d, Channels=%d, Type=%s", myInputDecoder.SampleRate, myInputDecoder.NumChannels, myInputDecoder.Type))
+	if decodeErr != nil {
+		return nil, fmt.Errorf("%s: decode failed: %w", functionName, decodeErr)
 	}
 	return outputSamples, nil
 } // <-- LoadFiletoBuffer ends here
-
-func maxValueForBitDepth(depth int) float64 {
-	MaxValue := 0.0
-	switch depth {
-	case 16:
-		MaxValue = 32768.0
-	case 24:
-		MaxValue = 8388608.0
-	case 32:
-		MaxValue = 2147483647.0
-	}
-	return MaxValue
-
-}
 
 // Some functions for identifying the most common audio formats from the header in the bytestream under 1000 bytes needed.
 func identifyFormat(data []byte) string {

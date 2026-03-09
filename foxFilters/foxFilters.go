@@ -397,6 +397,13 @@ func BuildPEQFilter(
 		}
 
 	}
+
+	/*	myLogger.Debug(packageName + fmt.Sprintf(" Coefficient count: %d", len(myPEQ.FilterCoefficients)))
+		for _, c := range myPEQ.FilterCoefficients {
+			myLogger.Debug(packageName + fmt.Sprintf(" b: %.10f, %.10f, %.10f", c.B[0], c.B[1], c.B[2]))
+			myLogger.Debug(packageName + fmt.Sprintf(" a: %.10f, %.10f, %.10f", c.A[0], c.A[1], c.A[2]))
+		}
+	*/
 	if generateImpulse {
 		myLogger.Debug(packageName + ": PEQ Filter Built - using " + fmt.Sprintf(" %v", numberOfFilters) + " filters")
 		myPEQ.UpdateFilterLength()

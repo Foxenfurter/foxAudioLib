@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	fft "github.com/Foxenfurter/foxAudioLib/foxFFT"
+	"github.com/Foxenfurter/foxAudioLib/foxUtils"
 )
 
 var (
@@ -17,6 +18,8 @@ var (
 	PartitionedHalfFFTSize      = 4097 // N/2+1 — unique bins from RealFft
 	PartitionedImpulseChunkSize = 4096 // Impulse partition size
 	PartitionedOverlapSize      = 4096 // overlap samples (L-1 conceptually, kept = L)
+
+	ProcessingMode = foxUtils.ModeStreaming // default
 )
 
 const packageName = "foxConvolverPartition"
@@ -74,11 +77,21 @@ func SetChunkSizeForSampleRate(sampleRate int) {
 	PartitionedOverlapSize = PartitionedChunkSize
 }
 
+func SetPartitionSizes(ChunkSize int) {
+
+	PartitionedChunkSize = ChunkSize
+	PartitionedFFTSize = PartitionedChunkSize * 2
+	PartitionedHalfFFTSize = PartitionedFFTSize/2 + 1
+	PartitionedImpulseChunkSize = PartitionedChunkSize
+	PartitionedOverlapSize = PartitionedChunkSize
+}
+
 // ─── Constructor ──────────────────────────────────────────────────────────────
 
 func NewPartitionedConvolver(impulse []float64, sampleRate int) *PartitionedConvolver {
 	if sampleRate > 0 {
-		// SetChunkSizeForSampleRate(sampleRate) // uncomment to auto-size
+		chunkSize := foxUtils.CalculateChunkSize(sampleRate, ProcessingMode )
+		SetPartitionSizes(chunkSize) // uncomment to auto-size
 	}
 
 	pc := &PartitionedConvolver{

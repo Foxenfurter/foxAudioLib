@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strconv"
 
+	"bufio"
 	"sync"
 
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
@@ -98,8 +99,7 @@ func (myResampler *Resampler) ReadnResampleFile2Buffer(filePath string) ([][]flo
 	// You can convert it to a bytes.Reader with bytes.NewReader()
 	myReader := bytes.NewReader(out.Bytes())
 	var myDecoder foxWavReader.WavReader
-
-	myDecoder.Input = myReader
+	myDecoder.Input = bufio.NewReaderSize(myReader, 8192)
 
 	err = myDecoder.DecodeWavHeader()
 	if err != nil {

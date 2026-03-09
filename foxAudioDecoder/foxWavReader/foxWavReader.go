@@ -386,7 +386,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 
 	bufferedInput, ok := FD.Input.(*bufio.Reader)
 	if !ok {
-		return fmt.Errorf("DecodeInput: Input is not a *bufio.Reader")
+		bufferedInput = bufio.NewReaderSize(FD.Input, 8192)
 	}
 	processingBuffer := make([]byte, processingBufferSize)
 	filledBytes := 0

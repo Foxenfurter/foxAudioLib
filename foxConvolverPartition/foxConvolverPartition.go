@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"math"
 	"math/bits"
 	"math/cmplx"
 	"strconv"
@@ -52,6 +53,7 @@ type PartitionedConvolver struct {
 	workRealBuf []float64    // length PartitionedFFTSize — real input + IFFT output
 	workOutput  []float64    // length PartitionedChunkSize
 	MaxGain     float64
+	RMSGain     float64
 
 	// Debug
 	DebugOn     bool
@@ -90,7 +92,7 @@ func SetPartitionSizes(ChunkSize int) {
 
 func NewPartitionedConvolver(impulse []float64, sampleRate int) *PartitionedConvolver {
 	if sampleRate > 0 {
-		chunkSize := foxUtils.CalculateChunkSize(sampleRate, ProcessingMode )
+		chunkSize := foxUtils.CalculateChunkSize(sampleRate, ProcessingMode)
 		SetPartitionSizes(chunkSize) // uncomment to auto-size
 	}
 
@@ -187,6 +189,7 @@ func (pc *PartitionedConvolver) initializePartitions() {
 	}
 
 	pc.MaxGain = pc.maxGainFromPartitions()
+	pc.RMSGain = pc.rmsGainFromImpulse()
 }
 
 // ─── Streaming initialisation ─────────────────────────────────────────────────
@@ -443,6 +446,43 @@ func MaxGainFromFFT(impulse []float64) float64 {
 	return maxGain
 }
 
+func (pc *PartitionedConvolver) rmsGainFromImpulse() float64 {
+	if len(pc.FilterImpulse) == 0 {
+		return 1.0
+	}
+	sumSq := 0.0
+	for _, v := range pc.FilterImpulse {
+		sumSq += v * v
+	}
+	if sumSq == 0 {
+		return 1.0
+	}
+	return math.Sqrt(sumSq)
+}
+
+func (pc *PartitionedConvolver) rmsGainFromFFTPartitions() float64 {
+	if len(pc.impulsePartitions) == 0 {
+		return 1.0
+	}
+
+	sumSq := 0.0
+	count := 0
+
+	for _, partition := range pc.impulsePartitions {
+		for _, v := range partition {
+			mag := cmplx.Abs(v)
+			sumSq += mag * mag
+			count++
+		}
+	}
+
+	if count == 0 {
+		return 1.0
+	}
+
+	return math.Sqrt(sumSq / float64(count))
+}
+
 func (pc *PartitionedConvolver) maxGainFromPartitions() float64 {
 	maxGain := 0.0
 	for _, partition := range pc.impulsePartitions {
@@ -483,6 +523,7 @@ func (pc *PartitionedConvolver) GobEncode() ([]byte, error) {
 		pc.ringSize,
 		pc.impulsePartitions, // each slice is now length N/2+1
 		pc.MaxGain,
+		pc.RMSGain,
 	} {
 		if err := enc.Encode(v); err != nil {
 			return nil, err
@@ -517,6 +558,7 @@ func (pc *PartitionedConvolver) GobDecode(data []byte) error {
 		&pc.ringSize,
 		&pc.impulsePartitions,
 		&pc.MaxGain,
+		&pc.RMSGain,
 	} {
 		if err := dec.Decode(p); err != nil {
 			return err

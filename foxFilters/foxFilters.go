@@ -19,13 +19,15 @@ const packageName = "foxFilters"
 const signalDivisor = 3 // when we calculate the signal block length we divide the sample rate by this number
 
 type PlayerConfig struct {
-	Filters    []BiquadFilter
-	Preamp     float64
-	FIRWavFile string
-	Width      float64
-	Balance    float64
-	Delay      ChannelDelay
-	Loudness   Loudness
+	Filters     []BiquadFilter
+	Preamp      float64
+	FIRWavFile  string
+	Width       float64
+	Balance     float64
+	Delay       ChannelDelay
+	Loudness    Loudness
+	FIRStrength float64 // 0-100, 0=bypass convolver, 100=full impulse
+	Crossfeed   string  // "off", "light", "medium", "strong"
 }
 
 type BiquadFilter struct {
@@ -61,7 +63,10 @@ func NewPEQFilter(targetSampleRate int, myLogger *foxLog.Logger) *foxPEQ.PEQFilt
 // BuildPlayerConfig takes already-normalised data
 // Handles only the current Filters array format
 func BuildPlayerConfig(raw map[string]json.RawMessage) (*PlayerConfig, error) {
-	config := &PlayerConfig{Filters: make([]BiquadFilter, 0)}
+	config := &PlayerConfig{
+		Filters:     make([]BiquadFilter, 0),
+		FIRStrength: 100.0, // default to full strength
+	}
 
 	if filtersRaw, ok := raw["Filters"]; ok {
 		var filters []struct {
@@ -158,6 +163,20 @@ func BuildPlayerConfig(raw map[string]json.RawMessage) (*PlayerConfig, error) {
 				config.Delay.Value = parseNumber(delay.Delay)
 
 				config.Delay.Units = "ms"
+			}
+		case key == "FIRStrength":
+			if s, err := parseRaw2Number(value); err == nil {
+				if f, err := s.Float64(); err == nil {
+					config.FIRStrength = f
+				} else {
+					config.FIRStrength = 100.0
+				}
+			}
+
+		case key == "Crossfeed":
+			var s string
+			if err := json.Unmarshal(value, &s); err == nil {
+				config.Crossfeed = strings.Trim(s, "\"")
 			}
 		}
 	}
@@ -355,6 +374,78 @@ func applyWindow(impulse [][]float64, taperTime, sampleRate float64, logger *fox
 			idx := totalSamples - taperSamples + i
 			impulse[c][idx] *= window[taperSamples-1-i]
 		}
+	}
+}
+
+// ApplyFIRStrength scales the impulse response by the specified strength percentage (0-100)
+func ApplyFIRStrengthToImpulse(full [][]float64, strength float64) [][]float64 {
+	if len(full) == 0 || len(full[0]) == 0 {
+		return make([][]float64, 0)
+	}
+
+	alpha := math.Max(0, math.Min(strength, 100)) / 100.0
+
+	if alpha == 0.0 {
+		return make([][]float64, 0)
+	}
+
+	if alpha == 1.0 {
+		return full
+	}
+
+	out := make([][]float64, len(full))
+	for ch := range full {
+		out[ch] = make([]float64, len(full[ch]))
+		for i := range full[ch] {
+			baseVal := 0.0
+			if i == 0 {
+				baseVal = 1.0
+			}
+			out[ch][i] = baseVal + alpha*(full[ch][i]-baseVal)
+		}
+	}
+	return out
+}
+
+// CrossfeedParams holds the parameters needed to implement headphone crossfeed.
+// The cross signal is low-pass filtered then attenuated before being added
+// to the opposite channel with a small delay.
+type CrossfeedParams struct {
+	FeedLinear float64 // linear gain of cross-channel feed
+	LPCutoffHz float64 // low-pass cutoff for cross signal (Hz)
+	DelayMs    float64 // inter-channel delay (ms)
+}
+
+// GetCrossfeedParams returns crossfeed parameters for a named level.
+// Based on BS2B-inspired values targeting natural speaker imaging on headphones.
+func GetCrossfeedParams(level string) *CrossfeedParams {
+	switch strings.ToLower(level) {
+	case "light":
+		return &CrossfeedParams{
+			FeedLinear: math.Pow(10, -9.0/20.0), // -9 dB
+			LPCutoffHz: 800.0,
+			DelayMs:    0.1,
+		}
+	case "medium":
+		return &CrossfeedParams{
+			FeedLinear: math.Pow(10, -6.0/20.0), // -3dB temporarily for testing
+			LPCutoffHz: 700.0,
+			DelayMs:    0.2,
+		}
+	case "strong":
+		return &CrossfeedParams{
+			FeedLinear: math.Pow(10, -4.5/20.0), // -4.5 dB
+			LPCutoffHz: 650.0,
+			DelayMs:    0.3,
+		}
+	case "bonkers":
+		return &CrossfeedParams{
+			FeedLinear: math.Pow(10, -1.0/20.0), // -1 dB
+			LPCutoffHz: 5000.0,
+			DelayMs:    60.0, // 0.6 is maximum natural ITD
+		}
+	default: // "off" or unrecognised
+		return nil
 	}
 }
 
@@ -588,8 +679,13 @@ func dBFSToLinear(dBFS float64) float64 {
 	return math.Pow(10, dBFS/20)
 }
 
-// Function to calculate width coefficients
+// simple width coefficient keeps centre channels gain vs crushing it with more complex function
 func GetWidthCoefficients(widthDB float64) (float64, float64) {
+	return 0.5, 0.5 * dBFSToLinear(widthDB)
+}
+
+// Function to calculate width coefficients
+func GetWidthCoefficientsComplex(widthDB float64) (float64, float64) {
 	if widthDB == 0 {
 		return 0.5, 0.5 // Correct neutral gains
 	}
@@ -812,4 +908,142 @@ func isNotZeroValue(n json.Number) bool {
 		return true
 	}
 	return true
+}
+
+// Crossfeed
+type CrossfeedProcessor struct {
+	Params *CrossfeedParams
+	// shelf biquad coefficients - computed once at init
+	b0, b1, b2 float64
+	a1, a2     float64
+	// biquad filter state - two samples per path
+	x1L, x2L, y1L, y2L float64
+	x1R, x2R, y1R, y2R float64
+	// delay buffers - one per path
+	delayBufL []float64
+	delayBufR []float64
+	delayPos  int
+}
+
+func NewCrossfeedProcessor(params *CrossfeedParams, sampleRate int) *CrossfeedProcessor {
+	if params == nil {
+		return nil
+	}
+
+	// low shelf biquad — boosts low frequencies relative to high in the cross signal
+	// this models the head shadowing effect: lows cross freely, highs are attenuated
+	// shelf gain is the difference between feed level and the HF floor
+	// e.g. feed=-6dB, HF floor=-12dB gives 6dB of shelf boost at low frequencies
+	fs := float64(sampleRate)
+	fc := params.LPCutoffHz
+
+	// shelf gain in linear — how much to boost lows relative to HF passthrough
+	// HF floor is fixed at half the feed attenuation in dB
+	feedDB := 20 * math.Log10(params.FeedLinear)
+	shelfGainDB := feedDB / 2 // HF floor is half the feed attenuation
+	shelfGain := math.Pow(10, shelfGainDB/20)
+
+	// bilinear transform low shelf
+	// based on Audio EQ Cookbook by Robert Bristow-Johnson
+	A := math.Sqrt(params.FeedLinear / shelfGain)
+	w0 := 2 * math.Pi * fc / fs
+	cosw0 := math.Cos(w0)
+	alpha := math.Sin(w0) / 2 * math.Sqrt((A+1/A)*(1/0.707-1)+2)
+
+	b0 := A * ((A + 1) - (A-1)*cosw0 + 2*math.Sqrt(A)*alpha)
+	b1 := 2 * A * ((A - 1) - (A+1)*cosw0)
+	b2 := A * ((A + 1) - (A-1)*cosw0 - 2*math.Sqrt(A)*alpha)
+	a0 := (A + 1) + (A-1)*cosw0 + 2*math.Sqrt(A)*alpha
+	a1 := -2 * ((A - 1) + (A+1)*cosw0)
+	a2 := (A + 1) + (A-1)*cosw0 - 2*math.Sqrt(A)*alpha
+
+	delaySamples := int(math.Round(params.DelayMs * float64(sampleRate) / 1000.0))
+	if delaySamples < 1 {
+		delaySamples = 1
+	}
+
+	return &CrossfeedProcessor{
+		Params:    params,
+		b0:        b0 / a0,
+		b1:        b1 / a0,
+		b2:        b2 / a0,
+		a1:        a1 / a0,
+		a2:        a2 / a0,
+		delayBufL: make([]float64, delaySamples),
+		delayBufR: make([]float64, delaySamples),
+	}
+}
+
+// ProcessChunk applies crossfeed with shelf filter to left and right slices in place
+func (cf *CrossfeedProcessor) ProcessChunk(left, right []float64) {
+	feed := cf.Params.FeedLinear
+	bufLen := len(cf.delayBufL)
+
+	for i := range left {
+		// apply low shelf to left signal for cross feed to right
+		filteredL := cf.b0*left[i] + cf.b1*cf.x1L + cf.b2*cf.x2L - cf.a1*cf.y1L - cf.a2*cf.y2L
+		cf.x2L, cf.x1L = cf.x1L, left[i]
+		cf.y2L, cf.y1L = cf.y1L, filteredL
+
+		// apply low shelf to right signal for cross feed to left
+		filteredR := cf.b0*right[i] + cf.b1*cf.x1R + cf.b2*cf.x2R - cf.a1*cf.y1R - cf.a2*cf.y2R
+		cf.x2R, cf.x1R = cf.x1R, right[i]
+		cf.y2R, cf.y1R = cf.y1R, filteredR
+
+		// read delayed cross signal
+		delayedL := cf.delayBufL[cf.delayPos]
+		delayedR := cf.delayBufR[cf.delayPos]
+
+		// write filtered signal into delay buffer
+		cf.delayBufL[cf.delayPos] = filteredL
+		cf.delayBufR[cf.delayPos] = filteredR
+		cf.delayPos = (cf.delayPos + 1) % bufLen
+
+		// mix delayed filtered cross signal into opposite channel
+		left[i] += delayedR * feed
+		right[i] += delayedL * feed
+	}
+}
+
+// CrossfeedState holds the persisted state for gob serialisation
+type CrossfeedState struct {
+	X1L, X2L, Y1L, Y2L float64
+	X1R, X2R, Y1R, Y2R float64
+	DelayBufL          []float64
+	DelayBufR          []float64
+	DelayPos           int
+}
+
+func (cf *CrossfeedProcessor) SaveState() *CrossfeedState {
+	if cf == nil {
+		return nil
+	}
+	return &CrossfeedState{
+		X1L:       cf.x1L,
+		X2L:       cf.x2L,
+		Y1L:       cf.y1L,
+		Y2L:       cf.y2L,
+		X1R:       cf.x1R,
+		X2R:       cf.x2R,
+		Y1R:       cf.y1R,
+		Y2R:       cf.y2R,
+		DelayBufL: append([]float64{}, cf.delayBufL...),
+		DelayBufR: append([]float64{}, cf.delayBufR...),
+		DelayPos:  cf.delayPos,
+	}
+}
+
+func (cf *CrossfeedProcessor) LoadState(state *CrossfeedState) {
+	if cf == nil || state == nil {
+		return
+	}
+	cf.x1L, cf.x2L = state.X1L, state.X2L
+	cf.y1L, cf.y2L = state.Y1L, state.Y2L
+	cf.x1R, cf.x2R = state.X1R, state.X2R
+	cf.y1R, cf.y2R = state.Y1R, state.Y2R
+	if len(state.DelayBufL) == len(cf.delayBufL) {
+		copy(cf.delayBufL, state.DelayBufL)
+		copy(cf.delayBufR, state.DelayBufR)
+		cf.delayPos = state.DelayPos
+	}
 }

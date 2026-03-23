@@ -100,6 +100,24 @@ func CalculateSafeMaxGain(filter []float64) float64 {
 	return safeMaxGain
 }
 
+func CalculateImpulseRMS(impulse [][]float64) float64 {
+	if len(impulse) == 0 || len(impulse[0]) == 0 {
+		return 0
+	}
+	sum := 0.0
+	count := 0
+	for _, ch := range impulse {
+		for _, v := range ch {
+			sum += v * v
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return math.Sqrt(sum / float64(count))
+}
+
 // Normalises and audio signal to the target level using a max and target level.
 // Max Level has been pre-calculated across all channels
 func NormalizeAudioChannel(audioImpulse []float64, targetLevel float64, max float64) []float64 {

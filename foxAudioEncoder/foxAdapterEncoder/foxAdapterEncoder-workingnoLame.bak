@@ -1,0 +1,371 @@
+// package foxAdapterEncoder provides an EncoderInterface implementation that uses an external process (like FFmpeg or SoX) to encode audio.
+// I was originally going to use FFmpeg, but SoX is more widely available on LMS and can handle FLAC/MP3 encoding without needing a separate installation, so I've switched to SoX for now. The code is designed to be flexible enough to support either, and the choice can be made via the AdapterType field.
+package foxAdapterEncoder
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"os/exec"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxWavEncoder"
+)
+
+const packageName = "foxAdapterEncoder"
+
+type EncoderAdapter struct {
+	SampleRate          int
+	NumChannels         int
+	BitDepth            int
+	TargetFormat        string
+	AdapterPath         string
+	AdapterType         string
+	ExtraArgs           []string
+	Peak                float64
+	FormatType          foxWavEncoder.FormatType // for interface compliance
+	Output              io.Writer                // ← downstream writer, set before StartEncoder
+	PlayerMaxSampleRate int                      // Optional max sample rate supported by Player, for resampling if needed
+
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+
+	mu       sync.Mutex
+	started  bool
+	finished bool
+	//finalData []byte
+
+	drainErr  error
+	drainDone chan struct{}
+	jobHandle uintptr
+	pcmBuf    []byte
+
+	DebugFunc func(string)
+}
+
+// SetFormatType implements EncoderInterface.
+func (e *EncoderAdapter) SetFormatType(ft foxWavEncoder.FormatType) {
+	e.FormatType = ft
+}
+
+// GetPeak implements EncoderInterface.
+func (e *EncoderAdapter) GetPeak() float64 {
+	return e.Peak
+}
+
+// EncodeHeader does nothing (headers are produced during Finish).
+func (e *EncoderAdapter) EncodeHeader() ([]byte, error) {
+	return nil, nil
+}
+
+func (e *EncoderAdapter) assignJobObject() error {
+	return nil
+}
+
+// StartEncoder initialises the ffmpeg subprocess.
+// Call this once before any EncodeData calls.
+func (e *EncoderAdapter) StartEncoder() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.started {
+		return nil
+	}
+	if e.Output == nil {
+		return errors.New("foxAdapterEncoder: Output writer not set")
+	}
+	if e.AdapterPath == "" {
+		return errors.New("foxAdapterEncoder: AdapterPath not set")
+	}
+	if e.TargetFormat == "" {
+		return errors.New("foxAdapterEncoder: TargetFormat not set")
+	}
+
+	args := []string{}
+	// kept because I have done the heavy lifting..
+	if e.AdapterType == "ffmpeg" {
+		var extraArgs []string
+		switch strings.ToUpper(e.TargetFormat) {
+		case "FLC":
+			bitDepth := e.BitDepth
+			if bitDepth == 0 {
+				bitDepth = 24
+			}
+			extraArgs = append(extraArgs, "-compression_level", "1")
+			switch bitDepth {
+			case 16:
+				extraArgs = append(extraArgs, "-sample_fmt", "s16")
+			case 24:
+				extraArgs = append(extraArgs, "-sample_fmt", "s32", "-bits_per_raw_sample", "24")
+			case 32:
+				extraArgs = append(extraArgs, "-sample_fmt", "s32")
+			default:
+				// anything else, default to 24
+				extraArgs = append(extraArgs, "-sample_fmt", "s32", "-bits_per_raw_sample", "24")
+			}
+		case "MP3":
+			extraArgs = []string{"-b:a", "320k"} // VBR ~190kbps; swap for "-b:a","320k" if CBR needed
+		case "AAC":
+			extraArgs = []string{"-b:a", "256k"}
+		}
+		args = append(args,
+			"-loglevel", "error",
+			"-f", "f64le",
+			"-ar", strconv.Itoa(e.SampleRate),
+			"-ac", strconv.Itoa(e.NumChannels),
+			"-i", "pipe:0",
+		)
+		args = append(args, extraArgs...) // ← see Bug 2 below
+		args = append(args,
+			"-f", e.TargetFormat,
+			"-y",
+			"pipe:1",
+		)
+	}
+	if e.AdapterType == "sox" {
+
+		outputRate := e.SampleRate
+		var extraOutputArgs []string
+
+		switch strings.ToUpper(e.TargetFormat) {
+		case "FLAC":
+			if outputRate > 384000 {
+				outputRate = 384000
+			}
+			if outputRate > e.PlayerMaxSampleRate && e.PlayerMaxSampleRate > 0 {
+				outputRate = e.PlayerMaxSampleRate
+			}
+			bitDepth := e.BitDepth
+			if bitDepth == 0 {
+				bitDepth = 24
+			}
+			extraOutputArgs = append(extraOutputArgs, "--compression", "2")
+			switch bitDepth {
+			case 16:
+				extraOutputArgs = append(extraOutputArgs, "-b", "16")
+			case 24:
+				extraOutputArgs = append(extraOutputArgs, "-b", "24")
+			case 32:
+				extraOutputArgs = append(extraOutputArgs, "-b", "32")
+			default:
+				extraOutputArgs = append(extraOutputArgs, "-b", "24")
+			}
+		case "MP3":
+			if outputRate > 48000 {
+				outputRate = 48000
+			}
+			extraOutputArgs = []string{"-C", "0"} // best VBR via LAME
+		}
+
+		args = append(args,
+			// Global
+			"-V1",
+			// Input spec
+			"-t", "raw",
+			"-e", "signed-integer",
+			"-b", "32",
+			"-L",
+			"-r", strconv.Itoa(e.SampleRate),
+			"-c", strconv.Itoa(e.NumChannels),
+			"-",
+			// Output spec
+			"-t", strings.ToLower(e.TargetFormat),
+			//"-r", strconv.Itoa(outputRate),
+		)
+		args = append(args, extraOutputArgs...)
+		args = append(args, "-")
+		// Effects chain
+		if outputRate != e.SampleRate {
+			args = append(args, "rate", "-v", "-s", "-a", strconv.Itoa(outputRate))
+			e.SampleRate = outputRate // Update to actual sample rate used by adapter
+		}
+	}
+	cmd := exec.Command(e.AdapterPath, args...)
+	e.debug("AdapterEncoder - Adapter Command: " + strings.Join(args, " "))
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+
+	// Capture stderr separately so errors are visible
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	if err := e.assignJobObject(); err != nil {
+		e.debug("AdapterEncoder: job object failed (non-fatal): " + err.Error())
+	}
+
+	e.cmd = cmd
+	e.stdin = stdin
+	e.stdout = stdout
+	e.drainDone = make(chan struct{})
+	e.started = true
+
+	go func() {
+		defer close(e.drainDone)
+		_, e.drainErr = io.Copy(e.Output, e.stdout)
+		e.debug(fmt.Sprintf("AdapterEncoder drain: exited err=%v", e.drainErr))
+		if e.cmd != nil && e.cmd.Process != nil {
+			e.debug("AdapterEncoder drain: killing subprocess on stdout close")
+			_ = e.cmd.Process.Kill()
+		}
+		e.debug("AdapterEncoder drain: closing drainDone")
+	}()
+
+	e.debug(fmt.Sprintf("AdapterEncoder: StartEncoder complete, jobHandle=%d", e.jobHandle))
+	return nil
+}
+
+// EncodeData writes a chunk of PCM samples to ffmpeg.
+// Can be called many times.
+// EncodeData no longer needs the mutex held during the write
+// — stdin.Write is safe to call concurrently with the drain goroutine
+// reading stdout, and the mu only needs to guard the started/finished flags.
+func (e *EncoderAdapter) EncodeData(samples [][]float64) ([]byte, error) {
+	e.mu.Lock()
+	if e.finished {
+		e.mu.Unlock()
+		return nil, errors.New("encoder already finished")
+	}
+	if !e.started {
+		e.mu.Unlock()
+		return nil, errors.New("must call StartEncoder first")
+	}
+	e.mu.Unlock() // ← release BEFORE the write
+
+	raw, err := e.float64SamplesToInt32PCM(samples)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := e.stdin.Write(raw); err != nil {
+		return nil, fmt.Errorf("write to %s stdin: %w", e.AdapterType, err)
+	}
+	return nil, nil
+}
+
+// Finish closes the stdin, reads the encoded output, and returns it.
+// Must be called after the last EncodeData.
+
+func (e *EncoderAdapter) Finish() error {
+	e.mu.Lock()
+	if e.finished {
+		e.mu.Unlock()
+		return nil
+	}
+	if !e.started {
+		e.mu.Unlock()
+		return errors.New("encoder not started")
+	}
+	e.finished = true
+	e.mu.Unlock()
+
+	e.debug("Finish: closing stdin")
+	e.stdin.Close()
+	e.debug("Finish: waiting for drain")
+	<-e.drainDone
+	e.debug("Finish: drain complete")
+	if e.cmd != nil {
+		e.cmd.Wait()
+	}
+	if e.drainErr != nil {
+		return fmt.Errorf("reading %s stdout: %w", e.AdapterType, e.drainErr)
+	}
+	return nil
+}
+
+func (e *EncoderAdapter) Kill() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	e.debug(fmt.Sprintf("AdapterEncoder Kill: started=%v finished=%v", e.started, e.finished))
+
+	if e.stdin != nil {
+		err := e.stdin.Close()
+		e.debug(fmt.Sprintf("AdapterEncoder Kill: stdin.Close() err=%v", err))
+	}
+
+	if e.cmd != nil && e.cmd.Process != nil {
+		e.debug(fmt.Sprintf("AdapterEncoder Kill: killing PID %d", e.cmd.Process.Pid))
+		// Kill directly — process group signal handled by OS on parent exit
+		err := e.cmd.Process.Kill()
+		e.debug(fmt.Sprintf("AdapterEncoder Kill: Process.Kill() err=%v", err))
+		// Wait for actual exit so handles are released before we return
+		done := make(chan struct{})
+		go func() {
+			e.cmd.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			e.debug("AdapterEncoder Kill: process exited")
+		case <-time.After(500 * time.Millisecond):
+			e.debug("AdapterEncoder Kill: timed out waiting for exit")
+		}
+	}
+}
+
+func (e *EncoderAdapter) debug(msg string) {
+	if e.DebugFunc != nil {
+		e.DebugFunc(msg)
+	}
+}
+
+// float64SamplesToRawPCM converts [][]float64 to interleaved 32-bit signed integer little-endian.
+// as usde by SoX internally so reduces pipe bandwidth requirements vs 64 bit
+func (e *EncoderAdapter) float64SamplesToInt32PCM(samples [][]float64) ([]byte, error) {
+	if len(samples) != e.NumChannels {
+		return nil, fmt.Errorf("channel count mismatch: got %d, want %d", len(samples), e.NumChannels)
+	}
+	numSamples := len(samples[0])
+	for _, ch := range samples {
+		if len(ch) != numSamples {
+			return nil, errors.New("inconsistent sample count across channels")
+		}
+	}
+	needed := numSamples * e.NumChannels * 4
+	if cap(e.pcmBuf) < needed {
+		e.pcmBuf = make([]byte, needed)
+	} else {
+		e.pcmBuf = e.pcmBuf[:needed]
+	}
+	out := e.pcmBuf
+	idx := 0
+	peak := e.Peak
+	for i := 0; i < numSamples; i++ {
+		for ch := 0; ch < e.NumChannels; ch++ {
+			val := samples[ch][i]
+			abs := val
+			if abs < 0 {
+				abs = -abs
+			}
+			if abs > peak {
+				peak = abs
+			}
+			if val > 1.0 {
+				val = 1.0
+			} else if val < -1.0 {
+				val = -1.0
+			}
+			v := uint32(int32(val * 0x7fffffff))
+			out[idx] = byte(v)
+			out[idx+1] = byte(v >> 8)
+			out[idx+2] = byte(v >> 16)
+			out[idx+3] = byte(v >> 24)
+			idx += 4
+		}
+	}
+	e.Peak = peak
+	return out, nil
+}

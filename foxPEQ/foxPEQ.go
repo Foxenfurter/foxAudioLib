@@ -33,8 +33,8 @@ func NewPEQFilter(sampleRate int, lowestFrequency int) PEQFilter {
 
 	myPEQFilter := PEQFilter{
 		SampleRate: sampleRate,
-
-		FilterLength: int(float64(2*sampleRate) / float64(lowestFrequency)),
+		// change to 3*sampleRate to give more accurate results for low frequencies, but will increase processing time and memory usage
+		FilterLength: int(float64(3*sampleRate) / float64(lowestFrequency)),
 	}
 	return myPEQFilter
 }
@@ -189,7 +189,7 @@ func (PEQ *PEQFilter) CalcBiquadFilter(filterType string, frequency, peakGain, w
 
 		return fmt.Errorf(errorPrefix+" %s frequency should be between 10 and 25000, got: %v ", filterType, frequency)
 	}
-	if PEQ.SampleRate < 10000 || PEQ.SampleRate > 400000 {
+	if PEQ.SampleRate < 10000 || PEQ.SampleRate > 800000 {
 		return fmt.Errorf(errorPrefix+" %s sampleRate should be a recognized sample rate, got: %d ", filterType, PEQ.SampleRate)
 	}
 	if peakGain < -30 || peakGain > 20 {

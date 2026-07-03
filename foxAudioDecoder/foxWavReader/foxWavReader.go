@@ -367,7 +367,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	MsgHeader := packageName + ":" + functionName + ": "
 	var TotalBytes int64
 	var TotalFrames int64
-
+	FD.debug(MsgHeader + " entered")
 	bytesPerFrame := FD.NumChannels * (FD.BitDepth / 8)
 	if bytesPerFrame == 0 {
 		return fmt.Errorf("invalid bytesPerFrame (BitDepth=%d)", FD.BitDepth)
@@ -397,7 +397,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 	eofReceived := false
 	//msgcounter := 0
 	for !eofReceived {
-
+		//FD.debug(MsgHeader + "top of loop, buffered=" + strconv.Itoa(bufferedInput.Buffered()))
 		// Check for actual EOF without blocking
 		_, err := bufferedInput.Peek(1)
 		if err == io.EOF {
@@ -459,6 +459,7 @@ func (FD *WavReader) DecodeInput(DecodedSamplesChannel chan [][]float64) error {
 					)
 				}
 				filledBytes = remainingBytes
+
 			} else if eofReceived {
 				filledBytes = 0 // Discard partial frame
 			}

@@ -10,32 +10,40 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	//	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxAdapterDecoder"
 	"github.com/Foxenfurter/foxAudioLib/foxAudioDecoder/foxWavReader"
 	"github.com/Foxenfurter/foxAudioLib/foxLog"
+
+	//"github.com/Foxenfurter/foxAudioLib/foxLog"
 	"github.com/Foxenfurter/foxAudioLib/foxUtils"
 )
 
 const packageName = "foxAudioDecoder"
 
 type AudioDecoder struct {
-	SampleRate      int
-	BitDepth        int
-	NumChannels     int
-	BigEndian       bool
-	Size            int64 // Size of the audio data
-	Type            string
-	Filename        string // Added for file reading
-	File            *os.File
-	WavDecoder      *foxWavReader.WavReader
+	SampleRate  int
+	BitDepth    int
+	NumChannels int
+	BigEndian   bool
+	Size        int64
+	Type        string
+	Filename    string
+	File        io.Reader
+	//FFmpegPath     string // add this
+	WavDecoder *foxWavReader.WavReader
+	//AdapterDecoder *foxAdapterDecoder.AdapterDecoder
+	StartTime time.Duration
+
 	TargetFrameSize int
 	TotalSamples    int64
-	DebugFunc       func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
+	DebugFunc       func(string)
 	RawPeak         float64
 	TimeStamp       string
 }
@@ -49,34 +57,31 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.debug(packageName + ":" + functionName + ": Initialising...")
 	}
 
-	//var myFile *os.File
-	if myDecoder.Filename == "" {
+	var r io.Reader
+
+	if myDecoder.Filename == "" || myDecoder.Filename == "-" {
 		stat, err := os.Stdin.Stat()
 		if err != nil {
-			return err // Handle the error
+			return err
 		}
 
 		if (stat.Mode() & os.ModeCharDevice) == 0 {
-			if myDecoder.DebugFunc != nil {
-				myDecoder.debug("Data is being piped to stdin")
-			}
-			// Proceed with reading from stdin (using your combinedReader logic)
-			// ...
-			myDecoder.File = os.Stdin
-
+			r = os.Stdin
 		} else {
 			return errors.New("no file specified and stdin is not a pipe")
 		}
 
 	} else {
-		var err error
-		// clean and standardize the filename
-		myDecoder.Filename = filepath.ToSlash(filepath.Clean(myDecoder.Filename))
-		myDecoder.File, err = os.Open(myDecoder.Filename)
+		f, err := os.Open(filepath.ToSlash(filepath.Clean(myDecoder.Filename)))
 		if err != nil {
 			return err
 		}
+		r = f
 	}
+
+	// Normalize behavior with buffering
+	//myDecoder.File = bufio.NewReader(r)
+	myDecoder.File = bufio.NewReaderSize(r, 512*1024)
 
 	// Initialize decoder based on type
 	// Decide which encoder to use
@@ -124,8 +129,44 @@ func (myDecoder *AudioDecoder) Initialise() error {
 		myDecoder.WavDecoder.TargetFrameSize = myDecoder.TargetFrameSize
 
 	default:
-		errorText := "unsupported encoder type "
-		return errors.New(packageName + ":" + functionName + ":" + errorText)
+		// reverted to wav as the defaul
+		initWavDecoder(myDecoder)
+
+		//Init the header
+		err := myDecoder.WavDecoder.DecodeWavHeader()
+		if err != nil {
+			return err
+		}
+		// Read the audio header data into a buffer
+		myDecoder.BitDepth = int(myDecoder.WavDecoder.BitDepth)
+		myDecoder.SampleRate = int(myDecoder.WavDecoder.SampleRate)
+		myDecoder.NumChannels = int(myDecoder.WavDecoder.NumChannels)
+
+		myDecoder.Size = int64(myDecoder.WavDecoder.Size)
+		if myDecoder.TargetFrameSize == 0 {
+			myDecoder.TargetFrameSize = myDecoder.SampleRate / 10
+		}
+		myDecoder.WavDecoder.TargetFrameSize = myDecoder.TargetFrameSize
+
+		/*ffmpegPath := myDecoder.FFmpegPath
+		if ffmpegPath == "" {
+			ffmpegPath = "ffmpeg"
+		}
+
+		adapter := &foxAdapterDecoder.AdapterDecoder{
+			DebugFunc:  myDecoder.DebugFunc,
+			Input:      r,
+			FFmpegPath: ffmpegPath,
+		}
+
+		if err := adapter.StartAdapter(myDecoder.SampleRate, myDecoder.NumChannels, myDecoder.StartTime); err != nil {
+			return fmt.Errorf("%s:%s:failed to start decoder: %w", packageName, functionName, err)
+		}
+
+		myDecoder.AdapterDecoder = adapter
+		myDecoder.File = nil // Clear the file reference since the adapter is now handling the input
+		// */
+
 	}
 
 	// It is important that the low level decoder packages support these setter functions
@@ -138,9 +179,8 @@ func (myDecoder *AudioDecoder) Initialise() error {
 
 func initWavDecoder(myDecoder *AudioDecoder) {
 	myDecoder.WavDecoder = &foxWavReader.WavReader{}
-	myDecoder.WavDecoder.Input = bufio.NewReaderSize(myDecoder.File, 8192)
+	myDecoder.WavDecoder.Input = myDecoder.File // already 512KB buffered in Initialise
 	myDecoder.WavDecoder.DebugFunc = myDecoder.DebugFunc
-
 }
 
 func (myDecoder *AudioDecoder) ConfigureFrameSize(mode foxUtils.ProcessingMode) {
@@ -148,15 +188,23 @@ func (myDecoder *AudioDecoder) ConfigureFrameSize(mode foxUtils.ProcessingMode) 
 	if myDecoder.WavDecoder != nil {
 		myDecoder.WavDecoder.TargetFrameSize = myDecoder.TargetFrameSize
 	}
+	/*	if myDecoder.AdapterDecoder != nil {
+			myDecoder.AdapterDecoder.TargetFrameSize = myDecoder.TargetFrameSize
+		}
+	*/
 }
 
 func (myDecoder *AudioDecoder) Close() error {
 	const functionName = "Close"
+	// Adapter case — r is owned by the adapter, nothing to close here
+	/*if myDecoder.AdapterDecoder != nil {
+		return nil
+	}*/
 	if myDecoder.File != nil {
-		if myDecoder.DebugFunc != nil {
-			myDecoder.debug(fmt.Sprintf(packageName + ":" + functionName + "Closing file handle for: " + myDecoder.Filename))
+		myDecoder.debug(packageName + ":" + functionName + ": Closing file handle for: " + myDecoder.Filename)
+		if f, ok := myDecoder.File.(*os.File); ok {
+			return f.Close()
 		}
-		return myDecoder.File.Close()
 	}
 	return nil
 }
@@ -164,21 +212,25 @@ func (myDecoder *AudioDecoder) Close() error {
 // Should call the lower level function and pass in the Channel to be used for transmitting decoded samples
 // Current version of wav loader does not need throttling
 func (myDecoder *AudioDecoder) DecodeSamples(DecodedSamplesChannel chan [][]float64) error {
-	const functionName = "DecodeSamples"
-	var err error
-	switch strings.ToUpper(myDecoder.Type) {
-	case "WAV", "PCM":
-		err = myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 
+	err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
+	myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
+	myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
+	return err
+
+	/*switch strings.ToUpper(myDecoder.Type) {
+	case "WAV", "PCM":
+		err := myDecoder.WavDecoder.DecodeInput(DecodedSamplesChannel)
 		myDecoder.TotalSamples = myDecoder.WavDecoder.TotalSamples
 		myDecoder.RawPeak = myDecoder.WavDecoder.RawPeak
 		return err
 
 	default:
-		errorText := "unsupported encoder type "
-		return errors.New(packageName + ":" + functionName + ":" + errorText)
-	}
-
+		err := myDecoder.AdapterDecoder.DecodeInput(DecodedSamplesChannel)
+		myDecoder.TotalSamples = myDecoder.AdapterDecoder.TotalSamples
+		myDecoder.RawPeak = myDecoder.AdapterDecoder.RawPeak
+		return err
+	}*/
 }
 
 // Simple file loader, returns a buffer with samples

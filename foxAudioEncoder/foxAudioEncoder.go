@@ -10,8 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxAdapterEncoder"
 	foxWavEncoder "github.com/Foxenfurter/foxAudioLib/foxAudioEncoder/foxWavEncoder"
 	"github.com/Foxenfurter/foxAudioLib/foxLog"
 )
@@ -29,11 +29,14 @@ type AudioEncoder struct {
 	file        *os.File      // Holds the open file handle
 	writer      *bufio.Writer // Buffered writer for efficient writes
 
-	DebugFunc  func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
-	DebugOn    bool         //enables debugging
-	Encoder    EncoderInterface
-	Peak       float64
-	NumSamples int64
+	DebugFunc           func(string) // enables the use of an external debug function supplied at the application level - expect to use foxLog
+	DebugOn             bool         //enables debugging
+	AdapterPath         string       // add this
+	Encoder             EncoderInterface
+	Peak                float64
+	NumSamples          int64
+	PlayerMaxSampleRate int                               // Optional max sample rate supported by Player, for resampling if needed
+	adapterEncoder      *foxAdapterEncoder.EncoderAdapter // specific to this adapter
 }
 
 // each Encoder must have these methods defined
@@ -43,6 +46,10 @@ type EncoderInterface interface {
 	//EncodeSingleChannel(buffer []float64) ([]byte, error)
 	GetPeak() float64
 	SetFormatType(formatType foxWavEncoder.FormatType)
+}
+
+type Closer interface {
+	Close() ([]byte, error)
 }
 
 const (
@@ -75,20 +82,6 @@ func (myEncoder *AudioEncoder) Initialise() error {
 	// Decide which encoder to use
 	switch strings.ToUpper(myEncoder.Type) {
 
-	case "WAV":
-		myEncoder.Encoder = &foxWavEncoder.FoxEncoder{
-			SampleRate:  myEncoder.SampleRate,
-			BitDepth:    myEncoder.BitDepth,
-			NumChannels: myEncoder.NumChannels,
-			Size:        myEncoder.Size,
-		}
-		// It is possible to over-write the 32 bit format type to PCM instead of float. Do it here if needed
-		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating wav header..."))
-
-		err = myEncoder.writeHeader() // Write header during initialization
-		if err != nil {
-			return fmt.Errorf(packageName+":"+functionName+":error writing wav header: %w", err)
-		}
 	case "PCM":
 		myEncoder.Encoder = &foxWavEncoder.FoxEncoder{
 			SampleRate:  myEncoder.SampleRate,
@@ -102,9 +95,58 @@ func (myEncoder *AudioEncoder) Initialise() error {
 		}
 		//Create empty header - no header for PCM
 		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  PCM Output..."))
+	case "FLC", "MP3":
+		AdapterPath := myEncoder.AdapterPath
+		if AdapterPath == "" {
+			return fmt.Errorf(packageName+":"+functionName+": No Adapter binary found for : %s", myEncoder.Type)
+		}
+		targetFormat := strings.ToLower(myEncoder.Type)
+		adapterType := ""
+		switch strings.ToUpper(targetFormat) {
+		case "FLC":
+			targetFormat = "flac"
+			adapterType = "sox"
+		case "MP3":
+			targetFormat = "mp3"
+			adapterType = "lame"
+		}
+		adapter := &foxAdapterEncoder.EncoderAdapter{
+			SampleRate:          myEncoder.SampleRate,
+			NumChannels:         myEncoder.NumChannels,
+			TargetFormat:        targetFormat,
+			AdapterPath:         AdapterPath,
+			BitDepth:            myEncoder.BitDepth,
+			AdapterType:         adapterType,
+			PlayerMaxSampleRate: myEncoder.PlayerMaxSampleRate,
 
+			//Output:       myEncoder.writer, // Output is handled in writeData to ensure proper initialization
+			Output: os.Stdout,
+		}
+		adapter.DebugFunc = myEncoder.DebugFunc // Pass the debug function to the adapter
+		if err := adapter.StartEncoder(); err != nil {
+			return err
+		}
+		// Sample Rate may be changed by adapter, so update it after starting the encoder
+		myEncoder.SampleRate = adapter.SampleRate // Update to actual sample rate used by adapter
+		myEncoder.Encoder = adapter
+		myEncoder.adapterEncoder = adapter
+
+		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  " + myEncoder.Type + " Output..."))
 	default:
-		return errors.New(packageName + ":" + functionName + ":unsupported encoder type")
+		// use WAV
+		myEncoder.Encoder = &foxWavEncoder.FoxEncoder{
+			SampleRate:  myEncoder.SampleRate,
+			BitDepth:    myEncoder.BitDepth,
+			NumChannels: myEncoder.NumChannels,
+			Size:        myEncoder.Size,
+		}
+		// It is possible to over-write the 32 bit format type to PCM instead of float. Do it here if needed
+		myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Creating wav header..."))
+
+		err = myEncoder.writeHeader() // Write header during initialization
+		if err != nil {
+			return fmt.Errorf(packageName+":"+functionName+":error writing wav header: %w", err)
+		}
 	}
 
 	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  Finished Header..."))
@@ -132,14 +174,15 @@ func (myEncoder *AudioEncoder) EncodeData(buffer [][]float64) error {
 }
 
 // EncoderStatus struct
-
+/*
 type EncoderStatus struct {
 	EncodedSamples  int64
 	BufferedSamples int64
 	StartTime       time.Time
 }
-
-/*func (myEncoder *AudioEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
+*/
+/*
+func (myEncoder *AudioEncoder) EncodeSingleChannel(buffer []float64) ([]byte, error) {
 	return myEncoder.Encoder.EncodeSingleChannel(buffer)
 }
 */
@@ -283,6 +326,14 @@ func (myEncoder *AudioEncoder) EncodeSamplesChannel(
 		totalSamples += int64(len(buffer[0]))
 
 	}
+	// Finalize adapter (if used)
+	if myEncoder.adapterEncoder != nil {
+		//finalData, err := myEncoder.adapterEncoder.Finish()
+		if err := myEncoder.adapterEncoder.Finish(); err != nil {
+			return fmt.Errorf("%s:%s: finish failed: %w", packageName, functionName, err)
+		}
+		myEncoder.debug("EncodeSamplesChannel: adapter Finish() complete")
+	}
 
 	myEncoder.debug(fmt.Sprintf(packageName+":"+functionName+" Total samples encoded: %v", totalSamples))
 	return nil
@@ -297,7 +348,7 @@ func (myEncoder *AudioEncoder) writeHeader() error {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
 	}
 	//myEncoder.debug(fmt.Sprintf(packageName + ":" + functionName + "  writing header.."))
-	//err = writeOutput(headerBytes, myEncoder.Filename)
+
 	err = myEncoder.writeData(headerBytes)
 	if err != nil {
 		return errors.New(packageName + ":" + functionName + ": " + err.Error())
@@ -337,17 +388,27 @@ func (e *AudioEncoder) writeData(data []byte) error {
 
 func (e *AudioEncoder) Close() error {
 	const functionName = "Close"
+	e.debug("Close: entered")
 	var err error
 
-	// Flush buffered data before closing
 	if e.writer != nil {
+		e.debug("Close: flushing writer")
 		if flushErr := e.writer.Flush(); flushErr != nil {
 			err = fmt.Errorf("%s:%s: flush error: %w", packageName, functionName, flushErr)
 		}
 	}
 
-	// Close the file handle if open
+	if e.adapterEncoder != nil {
+		e.debug("Close: calling adapter Finish()")
+		if finishErr := e.adapterEncoder.Finish(); finishErr != nil {
+			e.debug("Close: adapter Finish() failed, calling Kill()")
+			e.adapterEncoder.Kill()
+		}
+		e.debug("Close: adapter done")
+	}
+
 	if e.file != nil {
+		e.debug("Close: closing file")
 		if closeErr := e.file.Close(); closeErr != nil {
 			if err != nil {
 				err = fmt.Errorf("%v; close error: %w", err, closeErr)
@@ -357,6 +418,7 @@ func (e *AudioEncoder) Close() error {
 		}
 	}
 
+	e.debug("Close: complete")
 	return err
 }
 
